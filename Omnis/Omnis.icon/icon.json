@@ -1,0 +1,156 @@
+{
+  "features" : [
+    "refractivity",
+    "specular-location"
+  ],
+  "fill" : {
+    "linear-gradient" : [
+      "display-p3:1.00000,1.00000,1.00000,1.00000",
+      "display-p3:0.89020,0.89412,0.89804,1.00000"
+    ],
+    "orientation" : {
+      "start" : {
+        "x" : 0.5,
+        "y" : 1
+      },
+      "stop" : {
+        "x" : 0.5,
+        "y" : 0
+      }
+    }
+  },
+  "groups" : [
+    {
+      "blur-material" : null,
+      "layers" : [
+        {
+          "image-name" : "Highlights.png",
+          "name" : "Highlights",
+          "opacity-specializations" : [
+            {
+              "value" : 0.16
+            },
+            {
+              "appearance" : "dark",
+              "value" : 0.16
+            }
+          ],
+          "position" : {
+            "scale" : 0.87,
+            "translation-in-points" : [
+              0.43499999999994543,
+              32.360000000000014
+            ]
+          }
+        },
+        {
+          "image-name" : "Orb 2.png",
+          "name" : "Orb 2",
+          "position" : {
+            "scale" : 0.8,
+            "translation-in-points" : [
+              0,
+              0
+            ]
+          }
+        }
+      ],
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.5
+      },
+      "specular" : false,
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.3
+      }
+    },
+    {
+      "blur-material" : null,
+      "layers" : [
+        {
+          "fill" : {
+            "solid" : "extended-gray:1.00000,0.00000"
+          },
+          "image-name" : "Circle.png",
+          "name" : "Circle",
+          "position" : {
+            "scale" : 0.8,
+            "translation-in-points" : [
+              0,
+              0
+            ]
+          }
+        }
+      ],
+      "lighting" : "combined",
+      "refractivity" : {
+        "depth" : 0.7790625,
+        "enabled" : true,
+        "strength" : 0.310234375
+      },
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.16
+      },
+      "specular" : "inside",
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0
+      }
+    },
+    {
+      "layers" : [
+        {
+          "fill" : {
+            "linear-gradient" : [
+              "display-p3:0.20392,0.21176,0.23137,0.00000",
+              "display-p3:0.13361,0.13854,0.15332,1.00000"
+            ],
+            "orientation" : {
+              "start" : {
+                "x" : 0.5,
+                "y" : 0.9404838284450925
+              },
+              "stop" : {
+                "x" : 0.5,
+                "y" : 0.5
+              }
+            }
+          },
+          "glass" : false,
+          "image-name" : "Circle.png",
+          "name" : "Circle",
+          "position" : {
+            "scale" : 0.8,
+            "translation-in-points" : [
+              0,
+              0
+            ]
+          }
+        }
+      ],
+      "lighting" : "combined",
+      "refractivity" : {
+        "depth" : 1,
+        "enabled" : true,
+        "strength" : 0
+      },
+      "shadow" : {
+        "kind" : "layer-color",
+        "opacity" : 1
+      },
+      "specular" : false,
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0
+      }
+    }
+  ],
+  "supported-platforms" : {
+    "circles" : [
+      "watchOS"
+    ],
+    "squares" : "shared"
+  }
+}
