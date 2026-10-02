@@ -102,7 +102,7 @@ extension NSView {
 
 enum SurfaceShade {
     static let gradient = LinearGradient(
-        stops: [.init(color: .black.opacity(0.8), location: 0), .init(color: .black.opacity(0), location: 1)],
+        stops: [.init(color: .black, location: 0.32), .init(color: .black.opacity(0.32), location: 1)],
         startPoint: .top, endPoint: .bottom
     )
 }

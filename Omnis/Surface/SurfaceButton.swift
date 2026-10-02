@@ -22,8 +22,10 @@ struct SurfaceButton: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: symbol)
-                .font(.system(size: 13, weight: .semibold))
+                .font(.system(size: 15, weight: style == .prominent ? .semibold : .medium))
                 .foregroundStyle(style == .prominent ? .black : .white)
+                .contentTransition(.symbolEffect(.replace))
+                .animation(.smooth(duration: 0.25), value: symbol)
                 .frame(width: 32, height: 32)
                 .contentShape(Circle())
         }

@@ -4,10 +4,25 @@ import SwiftUI
 
 @Observable
 final class DemoState {
-    enum Mode { case compact, expanded }
+    enum Mode { case compact, expanded, sessions, sessionsCompact }
+    enum SessionsTab { case sessions, conversations }
 
     var mode: Mode = .compact
     var text = ""
+    var sessionsTab: SessionsTab = .sessions
+    /// Where the sessions list's back button returns to.
+    private var modeBeforeSessions: Mode = .compact
+
+    private var isInSessions: Bool { mode == .sessions || mode == .sessionsCompact }
+
+    func showSessions() {
+        if !isInSessions { modeBeforeSessions = mode }
+        mode = .sessions
+    }
+
+    func closeSessions() {
+        mode = modeBeforeSessions
+    }
 }
 
 struct SurfaceDemo: View {
@@ -16,24 +31,100 @@ struct SurfaceDemo: View {
     var body: some View {
         SurfaceHost(
             id: state.mode,
-            onCollapse: state.mode == .expanded ? { state.mode = .compact } : nil,
-            onExpand: state.mode == .compact ? { state.mode = .expanded } : nil
+            onCollapse: collapseAction,
+            onExpand: expandAction,
+            showsGrabber: state.mode != .compact
         ) {
             switch state.mode {
             case .compact: compact
             case .expanded: DemoAskBar(state: state)
+            case .sessions: sessions
+            case .sessionsCompact: sessionsCompact
             }
+        }
+    }
+
+    private var collapseAction: (() -> Void)? {
+        switch state.mode {
+        case .compact: nil
+        case .expanded: { state.mode = .compact }
+        case .sessions: { state.mode = .sessionsCompact }
+        case .sessionsCompact: { state.closeSessions() }
+        }
+    }
+
+    private var expandAction: (() -> Void)? {
+        switch state.mode {
+        case .compact: { state.mode = .expanded }
+        case .sessionsCompact: { state.mode = .sessions }
+        case .expanded, .sessions: nil
         }
     }
 
     private var compact: some View {
         HStack(spacing: 4) {
             SurfaceButton("square.and.pencil") { state.mode = .expanded }
-            SurfaceButton("list.bullet") {}
+            SurfaceButton("list.bullet") { state.showSessions() }
             SurfaceButton("play.fill", style: .prominent) {}
         }
         .padding(.vertical, 8)
         .padding(.horizontal, 6)
+    }
+
+    private var sessions: some View {
+        VStack(spacing: 0) {
+            // Top toolbar: back, centered title, more.
+            ZStack {
+                sessionsTitle
+                HStack {
+                    SurfaceButton("chevron.left") { state.closeSessions() }
+                    Spacer()
+                    SurfaceButton("ellipsis") {}
+                }
+            }
+
+            Spacer(minLength: 0)
+
+            // Bottom toolbar: select, tabs, filter.
+            HStack(spacing: 0) {
+                SurfaceButton("checklist") {}
+                Spacer(minLength: 0)
+                SurfaceTabBar(
+                    tabs: [
+                        .init(value: .sessions, title: "Sessions", symbol: "calendar"),
+                        .init(value: .conversations, title: "Chats", symbol: "bubble.left.and.bubble.right")
+                    ],
+                    selection: Bindable(state).sessionsTab
+                )
+                .zIndex(1)  // the lifted pill floats above the neighbouring buttons
+                Spacer(minLength: 0)
+                SurfaceButton("line.3.horizontal.decrease") {}
+            }
+            // The 52 pt tab bar overflows the 32 pt toolbar row, centered on it.
+            .frame(height: 32)
+        }
+        .padding(20)
+        .frame(width: 320, height: 380)
+    }
+
+    /// 72 pt capsule: back, title, filter.
+    private var sessionsCompact: some View {
+        HStack(spacing: 0) {
+            SurfaceButton("chevron.left") { state.closeSessions() }
+            Spacer(minLength: 0)
+            sessionsTitle
+            Spacer(minLength: 0)
+            SurfaceButton("line.3.horizontal.decrease") {}
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 20)
+        .frame(width: 256, height: 72)
+    }
+
+    private var sessionsTitle: some View {
+        Text("Sessions")
+            .font(.system(size: 15, weight: .semibold))
+            .foregroundStyle(.white)
     }
 }
 
@@ -48,20 +139,24 @@ private struct DemoAskBar: View {
     @State private var lineHeight: CGFloat = 0
     @State private var textHeight: CGFloat = 0
 
+    private static let fieldFont = Font.system(size: 15)
+    private static let fieldLineHeight = AttributedString.LineHeight.exact(points: 18)
+
     var body: some View {
         AskBarLayout(isMultiline: isMultiline) {
             TextField("Ask anything", text: $state.text, axis: .vertical)
                 .textFieldStyle(.plain)
-                .font(.body)
+                .font(Self.fieldFont)
+                .environment(\.lineHeight, Self.fieldLineHeight)
                 .foregroundStyle(.white)
                 .lineLimit(1...10)
                 .focused($fieldFocused)
                 .onSubmit(send)
             SurfaceButton("ellipsis") {}
-            SurfaceButton("list.bullet") {}
-            SurfaceButton("arrow.up", style: .prominent, action: send)
+            SurfaceButton("list.bullet") { state.showSessions() }
+            SurfaceButton(isEmpty ? "play.fill" : "arrow.up", style: .prominent, action: send)
         }
-        .padding(20)
+        .padding(isMultiline ? 20 : 18)
         .background(alignment: .topLeading) { lineProbe }
         .onAppear {
             surface?.makeKey?()
@@ -79,17 +174,25 @@ private struct DemoAskBar: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { textHeight = $0; updateLayout() }
         }
-        .font(.body)
+        .font(Self.fieldFont)
+        .environment(\.lineHeight, Self.fieldLineHeight)
         .hidden()
     }
 
     private func updateLayout() {
+        // Wait for both measurements; otherwise the first one alone can briefly read as wrapped.
+        guard lineHeight > 0, textHeight > 0 else { return }
         let wraps = textHeight > lineHeight + 1
         guard wraps != isMultiline else { return }
         withAnimation(SurfaceMotion.content) { isMultiline = wraps }
     }
 
+    private var isEmpty: Bool {
+        state.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     private func send() {
+        guard !isEmpty else { return }
         state.text = ""
         state.mode = .compact
     }

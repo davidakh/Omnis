@@ -1,9 +1,11 @@
 import SwiftUI
 
 /// Capsule glass tab bar: icon-over-label tabs on a selection pill. Like iOS, the pill can be
-/// picked up and dragged to another tab. While lifted it becomes a liquid lens (a Metal shader,
-/// see LiquidLens.metal) that refracts the tabs beneath it, trails the pointer like water,
-/// and stretches with its speed.
+/// picked up and dragged to another tab. While lifted it becomes a native glass drop that
+/// trails the pointer like water and stretches with its speed.
+///
+/// Layers, top to bottom: icons and labels, the glass pill, the bar's glass background.
+/// The pill sits beneath the labels, so its glass never blurs them.
 struct SurfaceTabBar<Value: Hashable>: View {
     struct Tab {
         let value: Value
@@ -29,10 +31,6 @@ struct SurfaceTabBar<Value: Hashable>: View {
     private static var step: CGFloat { tabWidth + tabSpacing }
 
     private static var liftScale: CGFloat { 1.3 }       // drop size relative to the resting pill
-    private static var magnification: CGFloat { 1.15 }  // how much the lens enlarges what's under it
-    private static var refraction: CGFloat { 7 }        // outward bending at the rim, in points
-    private static var aberration: CGFloat { 1.6 }      // colour separation at the rim, in points
-    private static var lensRoom: CGFloat { 24 }         // room around the row for the drop and shadow
     private static var maxStretch: CGFloat { 0.28 }
     private static var stretchSpeed: CGFloat { 1400 }   // pt/s of drag that reaches maxStretch
     private static var edgeGive: CGFloat { 14 }         // how far the drop can be pulled past the ends
@@ -47,9 +45,6 @@ struct SurfaceTabBar<Value: Hashable>: View {
         tabs.firstIndex { $0.value == selection } ?? 0
     }
 
-    private var rowWidth: CGFloat {
-        CGFloat(tabs.count) * Self.tabWidth + CGFloat(max(tabs.count - 1, 0)) * Self.tabSpacing
-    }
     private var maxPillX: CGFloat { CGFloat(max(tabs.count - 1, 0)) * Self.step }
     private var pillX: CGFloat { dragX ?? CGFloat(selectedIndex) * Self.step }
 
@@ -57,38 +52,32 @@ struct SurfaceTabBar<Value: Hashable>: View {
         let scale = isLifted ? Self.liftScale : 1
         return CGSize(
             width: Self.tabWidth * scale * (1 + stretch),
-            height: Self.tabHeight * scale * (1 - stretch * 0.5)
+            height: Self.tabHeight * scale * (1 - stretch * 0.2)
         )
     }
 
     var body: some View {
-        labels
-            // Resting pill: a soft fill behind the labels, hidden while the drop is lifted.
-            .background(alignment: .leading) {
-                Capsule()
-                    .fill(.white.opacity(isLifted ? 0 : 0.14))
-                    .frame(width: Self.tabWidth, height: Self.tabHeight)
-                    .offset(x: pillX)
-            }
-            .modifier(LiquidLensEffect(
-                centerX: pillX + Self.tabWidth / 2,
-                centerY: Self.tabHeight / 2,
-                width: dropSize.width,
-                height: dropSize.height,
-                visibility: isLifted ? 1 : 0,
-                room: Self.lensRoom,
-                magnification: Self.magnification,
-                refraction: Self.refraction,
-                aberration: Self.aberration
-            ))
+        labels                                              // top: icons and labels
+            .background(alignment: .leading) { pill }      // middle: the glass pill
             .contentShape(Capsule())
             .gesture(dragGesture)
             .padding(Self.inset)
-            // The bar's glass sits behind as a plain background; the labels and lens aren't its
-            // content, so nothing clips or covers the drop.
-            .background {
+            .background {                                   // bottom: the bar's glass
                 Color.clear.glassEffect(.clear.interactive(), in: Capsule())
             }
+    }
+
+    /// A soft fill at rest that turns into native glass while lifted.
+    private var pill: some View {
+        let size = dropSize
+        return ZStack {
+            Capsule().fill(.black.opacity(isLifted ? 0 : 0.6))
+            GlassSurface(radius: size.height / 2, style: .lens)
+                .opacity(isLifted ? 1 : 0)
+        }
+        .frame(width: size.width, height: size.height)
+        .offset(x: pillX + (Self.tabWidth - size.width) / 2)
+        .allowsHitTesting(false)
     }
 
     private var labels: some View {
@@ -172,45 +161,7 @@ struct SurfaceTabBar<Value: Hashable>: View {
     }
 }
 
-/// Applies the `liquidLens` shader. Animatable, so the drop's position, size and visibility
-/// interpolate smoothly on whatever springs drive them.
-private struct LiquidLensEffect: ViewModifier, Animatable {
-    var centerX: CGFloat
-    var centerY: CGFloat
-    var width: CGFloat
-    var height: CGFloat
-    var visibility: CGFloat
-    let room: CGFloat
-    let magnification: CGFloat
-    let refraction: CGFloat
-    let aberration: CGFloat
-
-    var animatableData: AnimatablePair<AnimatablePair<CGFloat, CGFloat>, AnimatablePair<CGFloat, CGFloat>> {
-        get { AnimatablePair(AnimatablePair(centerX, width), AnimatablePair(height, visibility)) }
-        set {
-            centerX = newValue.first.first
-            width = newValue.first.second
-            height = newValue.second.first
-            visibility = newValue.second.second
-        }
-    }
-
-    func body(content: Content) -> some View {
-        content
-            // Give the shader room to draw the drop and its shadow beyond the row's bounds.
-            .padding(room)
-            .layerEffect(
-                ShaderLibrary.liquidLens(
-                    .float2(Float(centerX + room), Float(centerY + room)),
-                    .float2(Float(width), Float(height)),
-                    .float(Float(visibility)),
-                    .float(Float(magnification)),
-                    .float(Float(refraction)),
-                    .float(Float(aberration))
-                ),
-                maxSampleOffset: CGSize(width: room, height: room),
-                isEnabled: visibility > 0.001
-            )
-            .padding(-room)
-    }
+extension GlassStyle {
+    /// Untinted clear glass with lensing, for the tab bar's lifted pill.
+    static let lens = GlassStyle(variant: 2, tint: 0, scrim: 0, lensing: true)
 }

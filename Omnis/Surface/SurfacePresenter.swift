@@ -7,6 +7,8 @@ final class SurfacePresenter: NSObject {
     let state = SurfaceState()
     private let panel: SurfacePanel
     private var mouseMonitors: [Any] = []
+    private var isScrolling = false
+    private var wheelIdleTask: Task<Void, Never>?
 
     init<Content: View>(@ViewBuilder content: () -> Content) {
         panel = SurfacePanel(
@@ -38,6 +40,7 @@ final class SurfacePresenter: NSObject {
         panel.contentView = hostingView
 
         state.onGlassFrameChange = { [weak self] _ in self?.updateMousePassthrough() }
+        state.makeKey = { [weak self] in self?.panel.makeKey() }
 
         position()
         NotificationCenter.default.addObserver(
@@ -99,10 +102,19 @@ final class SurfacePresenter: NSObject {
         }) {
             mouseMonitors.append(local)
         }
+        if let scroll = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel, handler: { [weak self] event in
+            guard let self, event.window === self.panel else { return event }
+            self.handleScroll(event)
+            return nil
+        }) {
+            mouseMonitors.append(scroll)
+        }
     }
 
-    /// The panel only accepts mouse events while the cursor is over the visible glass.
+    /// The panel only accepts mouse events while the cursor is over the visible glass,
+    /// or while a scroll gesture that started on the glass is still in progress.
     private func updateMousePassthrough() {
+        if isScrolling { return }
         let ignores = !(state.isPresented && glassScreenFrame.contains(NSEvent.mouseLocation))
         if panel.ignoresMouseEvents != ignores {
             panel.ignoresMouseEvents = ignores
@@ -119,5 +131,52 @@ final class SurfacePresenter: NSObject {
             width: glass.width,
             height: glass.height
         )
+    }
+
+    // MARK: - Scroll gestures
+
+    /// Translates AppKit scroll events into finger-direction began / changed / ended events.
+    /// Trackpads report phases; plain mouse wheels don't, so their gestures end after an idle gap.
+    private func handleScroll(_ event: NSEvent) {
+        // Momentum after the fingers lift isn't part of the gesture.
+        guard event.momentumPhase.isEmpty else { return }
+
+        let scale = event.hasPreciseScrollingDeltas ? 1 : SurfaceGesture.wheelLineScale
+        let sign: CGFloat = event.isDirectionInvertedFromDevice ? 1 : -1
+        let delta = CGSize(
+            width: event.scrollingDeltaX * scale * sign,
+            height: event.scrollingDeltaY * scale * sign
+        )
+
+        if event.phase.contains(.began) {
+            beginScroll()
+        } else if event.phase.contains(.changed) {
+            if !isScrolling { beginScroll() }
+            state.onScroll?(SurfaceScrollEvent(phase: .changed, delta: delta))
+        } else if event.phase.contains(.ended) || event.phase.contains(.cancelled) {
+            endScroll()
+        } else if event.phase.isEmpty {
+            if !isScrolling { beginScroll() }
+            state.onScroll?(SurfaceScrollEvent(phase: .changed, delta: delta))
+            wheelIdleTask?.cancel()
+            wheelIdleTask = Task { [weak self] in
+                try? await Task.sleep(for: .seconds(SurfaceGesture.wheelIdle))
+                guard !Task.isCancelled else { return }
+                self?.endScroll()
+            }
+        }
+    }
+
+    private func beginScroll() {
+        isScrolling = true
+        state.onScroll?(SurfaceScrollEvent(phase: .began))
+    }
+
+    private func endScroll() {
+        guard isScrolling else { return }
+        wheelIdleTask?.cancel()
+        isScrolling = false
+        state.onScroll?(SurfaceScrollEvent(phase: .ended))
+        updateMousePassthrough()
     }
 }
