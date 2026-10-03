@@ -11,6 +11,7 @@ struct LiveTranscriptScreen: View {
                 Text("Transcript")
                     .font(.system(size: 15, weight: .semibold))
                     .foregroundStyle(.white)
+                    .toolbarTitleShadow()
                     .frame(height: 32)
                 Spacer(minLength: 0)
                 // The 52 pt orb overflows the 32 pt toolbar row, centered on it.

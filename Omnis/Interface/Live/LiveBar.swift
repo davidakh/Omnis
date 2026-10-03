@@ -35,8 +35,15 @@ struct LiveControls: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            MoreMenu(state: state)
-            SurfaceButton("pause.fill") {}.padding(.leading, 6)
+            // What the session listens to and answers can look at.
+            MoreMenu(state: state) {
+                Toggle("Microphone", systemImage: "mic", isOn: Bindable(state).usesMicrophone)
+                Toggle("System Audio", systemImage: "speaker.wave.2", isOn: Bindable(state).usesSystemAudio)
+                Toggle("Screen", systemImage: "macwindow", isOn: Bindable(state).usesScreen)
+            }
+            // Pause / resume; the orb beside it ends the session.
+            SurfaceButton(state.isPaused ? "play.fill" : "pause.fill") { state.togglePause() }
+                .padding(.leading, 6)
             if showingTranscript { Spacer(minLength: 12) }
             LiveOrb(state: state, diameter: 52).padding(.horizontal, showingTranscript ? 0 : 12)
             if showingTranscript { Spacer(minLength: 12) }
