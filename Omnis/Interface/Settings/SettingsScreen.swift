@@ -3,7 +3,7 @@ import SwiftUI
 
 // MARK: - Settings
 
-/// Settings inside the glass: 512×612, a sidebar of panes beside the selected pane. The sidebar
+/// Settings inside the glass: 620×712, a sidebar of panes beside the selected pane. The sidebar
 /// can be hidden to give the pane the full width. Back (or pulling down) returns to where
 /// settings was opened from.
 struct SettingsScreen: View {
@@ -12,17 +12,26 @@ struct SettingsScreen: View {
     @State private var pane: SettingsPane = .general
     @State private var showsSidebar = true
 
-    private static var size: CGSize { CGSize(width: 512, height: 612) }
+    private static var size: CGSize { CGSize(width: 620, height: 712) }
     private static var sidebarWidth: CGFloat { 180 }
 
+    /// While true, only a "coming soon" prompt is shown in place of the panes.
+    private static var isLocked: Bool { true }
+
     var body: some View {
-        HStack(spacing: 0) {
-            if showsSidebar {
-                sidebar
-                    .frame(width: Self.sidebarWidth)
-                    .transition(.move(edge: .leading).combined(with: .opacity))
+        Group {
+            if Self.isLocked {
+                ComingSoonPrompt { state.closeSettings() }
+            } else {
+                HStack(spacing: 0) {
+                    if showsSidebar {
+                        sidebar
+                            .frame(width: Self.sidebarWidth)
+                            .transition(.move(edge: .leading).combined(with: .opacity))
+                    }
+                    detail
+                }
             }
-            detail
         }
         .frame(width: Self.size.width, height: Self.size.height)
         .animation(SurfaceMotion.content, value: showsSidebar)
@@ -138,13 +147,13 @@ enum SettingsPane: Hashable, Identifiable {
         }
     }
 
-    var color: Color {
+    var color: AnyShapeStyle {
         switch self {
-        case .general, .storage, .backup, .about: SettingsIcon.gray
-        case .intelligence: .red
-        case .connect: .indigo
-        case .privacy, .behavior: .blue
-        case .shortcuts: .purple
+        case .general, .storage, .backup, .about: AnyShapeStyle(SettingsIcon.gray)
+        case .intelligence: SettingsIcon.intelligence
+        case .connect: AnyShapeStyle(.indigo)
+        case .privacy, .behavior: AnyShapeStyle(.blue)
+        case .shortcuts: AnyShapeStyle(.purple)
         }
     }
 }
@@ -204,41 +213,269 @@ private struct LaunchAtLoginRow: View {
     }
 }
 
-/// Which Apple Foundation Models variant answers questions and writes summaries.
+/// Which model answers questions and writes summaries: an intro card, then the agents to choose
+/// from (Apple Foundation Models, or Claude or ChatGPT with the user's own API key), then the
+/// chosen agent's options.
 private struct ModelSettingsSection: View {
     @Bindable var settings: ModelSettings
     let resolver: ModelResolver
 
+    /// Bumped when an API key is saved, so the rows' statuses (read from the Keychain) refresh.
+    @State private var keysVersion = 0
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            SettingsHeader("Model")
-            VStack(spacing: 2) {
-                ForEach(ModelProvider.selectable) { provider in
-                    ProviderRow(
-                        provider: provider,
-                        status: resolver.status(of: provider),
-                        isSelected: settings.provider == provider
+        VStack(alignment: .leading, spacing: 10) {
+            IntelligenceCard()
+                .padding(.bottom, 10)
+
+            Text("Agents")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 4)
+
+            VStack(spacing: 0) {
+                ForEach(Array(Agent.allCases.enumerated()), id: \.element) { index, agent in
+                    if index > 0 {
+                        Divider().overlay(.white.opacity(0.05)).padding(.leading, 62)
+                    }
+                    AgentRow(
+                        agent: agent,
+                        status: resolver.status(of: agent.provider(current: settings.provider)),
+                        isSelected: agent == Agent(settings.provider)
                     ) {
-                        settings.provider = provider
+                        settings.provider = agent.provider(current: settings.provider)
                     }
                 }
             }
-            .padding(.horizontal, -10)  // rows inset their text by 10 pt for the hover tint
+            .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .id(keysVersion)
 
-            Group {
+            providerOptions
+                .padding(.horizontal, 4)
+                .padding(.top, 6)
+        }
+        .animation(SurfaceMotion.content, value: settings.provider)
+    }
+
+    @ViewBuilder
+    private var providerOptions: some View {
+        switch settings.provider {
+        case .appleOnDevice, .applePrivateCloud:
+            VStack(alignment: .leading, spacing: 10) {
+                SettingsField("Runs On") {
+                    Picker("Runs On", selection: $settings.provider) {
+                        Text("This Mac").tag(ModelProvider.appleOnDevice)
+                        Text("Private Cloud").tag(ModelProvider.applePrivateCloud)
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                    .fixedSize()
+                }
                 if settings.provider == .applePrivateCloud {
-                    SettingsNote("Larger context and stronger reasoning on Apple's Private Cloud Compute. Falls back to the on-device model when it can't be reached or the daily limit is reached.")
+                    SettingsNote("Larger context and stronger reasoning on Apple's Private Cloud Compute. Falls back to this Mac when it can't be reached or the daily limit is reached.")
                 } else {
                     SettingsNote("Runs entirely on this Mac. Nothing leaves your device.")
                 }
             }
-            .padding(.top, 8)
+            .transition(.blurReplace)
+        case .anthropic:
+            VStack(alignment: .leading, spacing: 10) {
+                SettingsField("Model") {
+                    Picker("Model", selection: $settings.anthropicModel) {
+                        ForEach(ModelSettings.anthropicModels, id: \.id) { model in
+                            Text(model.name).tag(model.id)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .fixedSize()
+                }
+                APIKeyField(settings: settings, provider: .anthropic) { keysVersion += 1 }
+                SettingsNote("Questions, transcripts and screen context are sent to Anthropic with your API key.")
+            }
+            .transition(.blurReplace)
+        case .openAI:
+            VStack(alignment: .leading, spacing: 10) {
+                SettingsField("Model") {
+                    TextField("gpt-5", text: $settings.openAIModel)
+                        .textFieldStyle(.plain)
+                        .settingsInput()
+                        .frame(width: 160)
+                }
+                APIKeyField(settings: settings, provider: .openAI) { keysVersion += 1 }
+                SettingsNote("Questions, transcripts and screen context are sent to OpenAI with your API key.")
+            }
+            .transition(.blurReplace)
         }
     }
 }
 
-private struct ProviderRow: View {
+/// A provider's API key, kept in the Keychain. Shows whether one is saved; typing a new one
+/// and pressing Return saves it, and saving an empty field removes it.
+private struct APIKeyField: View {
+    let settings: ModelSettings
     let provider: ModelProvider
+    /// Called after the key is saved or removed.
+    let onChange: () -> Void
+
+    @State private var draft = ""
+    @State private var hasKey = false
+
+    var body: some View {
+        SettingsField("API Key") {
+            HStack(spacing: 6) {
+                SecureField(hasKey ? "Saved" : "Paste Key", text: $draft)
+                    .textFieldStyle(.plain)
+                    .settingsInput()
+                    .frame(width: 160)
+                    .onSubmit(save)
+                if hasKey && draft.isEmpty {
+                    Button("Remove") {
+                        settings.setAPIKey("", for: provider)
+                        refresh()
+                    }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.7))
+                } else if !draft.isEmpty {
+                    Button("Save", action: save)
+                        .buttonStyle(.plain)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.white)
+                }
+            }
+        }
+        .onAppear { hasKey = settings.apiKey(for: provider) != nil }
+    }
+
+    private func save() {
+        guard !draft.isEmpty else { return }
+        settings.setAPIKey(draft, for: provider)
+        draft = ""
+        refresh()
+    }
+
+    private func refresh() {
+        hasKey = settings.apiKey(for: provider) != nil
+        onChange()
+    }
+}
+
+/// A label with a trailing control, for the provider options.
+private struct SettingsField<Control: View>: View {
+    let title: LocalizedStringKey
+    @ViewBuilder let control: () -> Control
+
+    init(_ title: LocalizedStringKey, @ViewBuilder control: @escaping () -> Control) {
+        self.title = title
+        self.control = control
+    }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Text(title)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(.white)
+            Spacer(minLength: 0)
+            control()
+        }
+        .frame(minHeight: 28)
+    }
+}
+
+private extension View {
+    /// The look of a text input in settings: white text on a soft capsule.
+    func settingsInput() -> some View {
+        self
+            .font(.system(size: 12))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 10)
+            .frame(height: 26)
+            .background(.white.opacity(0.08), in: Capsule())
+    }
+}
+
+/// The agents offered in Settings. Apple covers both Foundation Models variants; which one runs
+/// is chosen under the list.
+private enum Agent: CaseIterable, Hashable {
+    case apple, claude, chatGPT
+
+    init(_ provider: ModelProvider) {
+        switch provider {
+        case .appleOnDevice, .applePrivateCloud: self = .apple
+        case .anthropic: self = .claude
+        case .openAI: self = .chatGPT
+        }
+    }
+
+    /// The provider choosing this agent selects; Apple keeps the current variant if it's one.
+    func provider(current: ModelProvider) -> ModelProvider {
+        switch self {
+        case .apple: Agent(current) == .apple ? current : .appleOnDevice
+        case .claude: .anthropic
+        case .chatGPT: .openAI
+        }
+    }
+
+    var name: LocalizedStringKey {
+        switch self {
+        case .apple: "Apple Foundation Model"
+        case .claude: "Claude"
+        case .chatGPT: "ChatGPT"
+        }
+    }
+
+    var maker: String {
+        switch self {
+        case .apple: String(localized: "Apple")
+        case .claude: String(localized: "Anthropic")
+        case .chatGPT: String(localized: "OpenAI")
+        }
+    }
+
+    var symbol: SettingsSymbol {
+        switch self {
+        case .apple: .custom("foundation.model")
+        case .claude: .custom("claude")
+        case .chatGPT: .custom("chatgpt")
+        }
+    }
+
+    var color: AnyShapeStyle {
+        switch self {
+        case .apple: SettingsIcon.foundationModel
+        case .claude: AnyShapeStyle(Color(red: 0.85, green: 0.47, blue: 0.34))  // Claude's terracotta
+        case .chatGPT: AnyShapeStyle(Color(white: 0.12))
+        }
+    }
+}
+
+/// The intro card at the top of Intelligence: its icon, a title and what choosing a model means.
+private struct IntelligenceCard: View {
+    var body: some View {
+        HStack(alignment: .center, spacing: 14) {
+            SettingsIcon(symbol: .custom("intelligence"), color: SettingsIcon.intelligence)
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Intelligence")
+                    .font(.body)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(.primary)
+                Text("Supercharge your Omnis experience with built in intelligence and your choice of model. Third-party models will have access to your sessions and recordings.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+    }
+}
+
+/// One agent: its icon, its name and maker (or why it can't be used yet), and a check when
+/// it's the one answering.
+private struct AgentRow: View {
+    let agent: Agent
     let status: String?
     let isSelected: Bool
     let select: () -> Void
@@ -246,33 +483,62 @@ private struct ProviderRow: View {
     @State private var isHovered = false
 
     var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                .font(.system(size: 16))
-                .foregroundStyle(isSelected ? .white : .white.opacity(0.4))
-            VStack(alignment: .leading, spacing: 2) {
-                Text(provider.displayName)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(.white)
-                if let status {
-                    Text(status)
-                        .font(.system(size: 11))
-                        .foregroundStyle(.white.opacity(0.55))
-                }
+        HStack(spacing: 14) {
+            SettingsIcon(symbol: agent.symbol, color: agent.color)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(agent.name)
+                    .font(.body)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(.primary)
+                Text(status.map { "\(agent.maker) · \($0)" } ?? agent.maker)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
             Spacer(minLength: 0)
+            if isSelected {
+                Image(systemName: "checkmark")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .transition(.blurReplace)
+            }
         }
-        .padding(.vertical, 8)
-        .padding(.horizontal, 10)
-        .background(
-            .white.opacity(isSelected ? 0.12 : (isHovered ? 0.06 : 0)),
-            in: RoundedRectangle(cornerRadius: 12, style: .continuous)
-        )
-        .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(.white.opacity(isHovered ? 0.04 : 0))
+        .contentShape(Rectangle())
         .onHover { isHovered = $0 }
         .onTapGesture(perform: select)
         .animation(.smooth(duration: 0.15), value: isHovered)
         .animation(.smooth(duration: 0.2), value: isSelected)
+    }
+}
+
+/// Shown over the locked settings: a back button, a lock, and word that settings are coming soon.
+private struct ComingSoonPrompt: View {
+    let close: () -> Void
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            VStack(spacing: 12) {
+                SettingsIcon(symbol: .system("lock.fill"), color: SettingsIcon.gray)
+                    .scaleEffect(1.6)
+                    .padding(.bottom, 6)
+                Text("Settings Are Coming Soon")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(.white)
+                Text("You'll be able to customize Omnis here in a future update.")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.white.opacity(0.6))
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: 280)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            SurfaceButton("chevron.left", action: close)
+                .padding(20)
+        }
     }
 }
 
@@ -313,14 +579,41 @@ enum SettingsSymbol: Hashable {
     }
 }
 
-/// A white symbol on a rounded, colored tile, like System Settings. The tile is one flat color;
-/// inner highlights along its top and bottom and shading along its sides give it depth, and
-/// the symbol is layered the same way (after DSX's `Icon`, at its medium size).
+/// A white symbol on a rounded, colored tile, like System Settings. The tile is a flat color or
+/// a gradient; inner highlights along its top and bottom and shading along its sides give it
+/// depth, and the symbol is layered the same way (after DSX's `Icon`, at its medium size).
 private struct SettingsIcon: View {
     static let gray = Color(white: 0.55)
 
+    /// Apple Intelligence's colors: yellow at the top left, red to the right, blue along the
+    /// bottom and lilac in the corner.
+    static let intelligence = AnyShapeStyle(MeshGradient(
+        width: 3, height: 3,
+        points: [
+            [0, 0], [0.5, 0], [1, 0],
+            [0, 0.5], [0.55, 0.45], [1, 0.5],
+            [0, 1], [0.5, 1], [1, 1]
+        ],
+        colors: [
+            Color(red: 0.91, green: 0.69, blue: 0.24), Color(red: 0.88, green: 0.52, blue: 0.43), Color(red: 0.84, green: 0.4, blue: 0.45),
+            Color(red: 0.93, green: 0.77, blue: 0.38), Color(red: 0.85, green: 0.55, blue: 0.55), Color(red: 0.86, green: 0.44, blue: 0.5),
+            Color(red: 0.8, green: 0.89, blue: 0.97), Color(red: 0.47, green: 0.64, blue: 0.9), Color(red: 0.7, green: 0.57, blue: 0.9)
+        ]
+    ))
+
+    /// Foundation Models: green at the top left into blue at the bottom right.
+    static let foundationModel = AnyShapeStyle(LinearGradient(
+        colors: [Color(red: 0.55, green: 0.84, blue: 0.42), Color(red: 0.33, green: 0.7, blue: 0.82), Color(red: 0.42, green: 0.48, blue: 0.94)],
+        startPoint: .topLeading, endPoint: .bottomTrailing
+    ))
+
     let symbol: SettingsSymbol
-    let color: Color
+    let color: AnyShapeStyle
+
+    init(symbol: SettingsSymbol, color: some ShapeStyle) {
+        self.symbol = symbol
+        self.color = AnyShapeStyle(color)
+    }
 
     private static var frame: CGFloat { 22 }
     private static var corner: CGFloat { 6.5 }

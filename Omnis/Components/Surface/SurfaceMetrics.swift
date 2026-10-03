@@ -1,7 +1,7 @@
 import SwiftUI
 
 enum SurfaceMetrics {
-    static let maxSize = CGSize(width: 560, height: 640)   // room for the 512×612 settings
+    static let maxSize = CGSize(width: 648, height: 740)   // room for the 620×712 settings
     static let minSide: CGFloat = 48           // compact capsule height (32 pt button + 8 pt padding each side)
     static let maxCornerRadius: CGFloat = 36   // rounded-rect radius; short surfaces stay capsules since radius = min(side / 2, this)
     static let overshootMargin: CGFloat = 24   // room for spring overshoot inside the panel

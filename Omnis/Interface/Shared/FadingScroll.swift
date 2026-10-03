@@ -7,7 +7,7 @@ struct FadingScroll<Content: View>: View {
     var anchor: UnitPoint? = nil
     /// The surface height. With the default toolbars (20 pt padding + 32 pt bar; a bottom tab
     /// bar spills 10 pt further), content starts below / ends above them, and fades beneath.
-    var height: CGFloat = 380
+    var height: CGFloat = 400
     var topClear: CGFloat = 64
     /// Room left below the content (less when there's no bottom toolbar).
     var bottomClear: CGFloat = 76

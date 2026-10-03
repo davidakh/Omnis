@@ -22,6 +22,8 @@ final class Session {
     var audioFolder: String? = nil
     /// Generated sections, JSON-encoded; read and write through `sections`.
     var sectionsData: Data? = nil
+    /// Questions asked during the session, JSON-encoded; read and write through `chats`.
+    var chatsData: Data? = nil
 
     @Relationship(deleteRule: .cascade, inverse: \TranscriptLine.session)
     var lines: [TranscriptLine] = []
@@ -54,6 +56,12 @@ final class Session {
     var sections: [SessionSection] {
         get { sectionsData.flatMap { try? JSONDecoder().decode([SessionSection].self, from: $0) } ?? [] }
         set { sectionsData = newValue.isEmpty ? nil : try? JSONEncoder().encode(newValue) }
+    }
+
+    /// The chats asked while the session was recording, in the order they started.
+    var chats: [SessionChat] {
+        get { chatsData.flatMap { try? JSONDecoder().decode([SessionChat].self, from: $0) } ?? [] }
+        set { chatsData = newValue.isEmpty ? nil : try? JSONEncoder().encode(newValue) }
     }
 
     var orderedLines: [TranscriptLine] { lines.sorted { $0.order < $1.order } }
@@ -95,6 +103,21 @@ struct SessionSection: Codable, Hashable, Identifiable {
             ? String(format: "%d:%02d:%02d", hours, minutes, secs)
             : String(format: "%d:%02d", minutes, secs)
     }
+}
+
+/// A question thread asked during a live session, with its answered turns.
+struct SessionChat: Codable, Hashable, Identifiable {
+    struct Turn: Codable, Hashable {
+        var question: String
+        var answer: String
+        /// Seconds from the start of the session, when the answer settled.
+        var offset: TimeInterval
+
+        var timestamp: String { SessionSection.format(offset) }
+    }
+
+    var id: UUID
+    var turns: [Turn]
 }
 
 /// One line of a transcript.

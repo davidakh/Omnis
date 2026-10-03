@@ -72,7 +72,12 @@ final class SessionStore {
 
     /// Saves a finished live session.
     @discardableResult
-    func createSession(startedAt: Date, lines: [LiveLine], audioFolder: String? = nil) -> Session {
+    func createSession(
+        startedAt: Date,
+        lines: [LiveLine],
+        audioFolder: String? = nil,
+        chats: [SessionChat] = []
+    ) -> Session {
         let session = Session(
             title: String(localized: "New Session"),
             kind: .session,
@@ -80,6 +85,7 @@ final class SessionStore {
             endedAt: .now
         )
         session.audioFolder = audioFolder
+        session.chats = chats
         context.insert(session)
         for (order, line) in lines.enumerated() {
             let record = TranscriptLine(order: order, speaker: line.speaker, text: line.text, offset: line.offset)

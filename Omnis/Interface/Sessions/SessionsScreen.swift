@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// 320×380: the sessions / chats list scrolling behind its two toolbars.
+/// 340×400: the sessions / chats list scrolling behind its two toolbars.
 struct SessionsScreen: View {
     let state: AppState
 
@@ -10,14 +10,14 @@ struct SessionsScreen: View {
             SessionList(state: state)
             toolbars
         }
-        .frame(width: 320, height: 380)
+        .frame(width: 340, height: 400)
     }
 
     private var toolbars: some View {
         VStack(spacing: 0) {
             // Top toolbar: back, centered title, more.
             ZStack {
-                SessionsTitle()
+                SessionsTitle(state: state)
                 HStack {
                     SurfaceButton("chevron.left") { state.closeSessions() }
                     Spacer()
@@ -60,7 +60,7 @@ struct SessionsScreen: View {
             } else {
                 SurfaceTabBar(
                     tabs: [
-                        .init(value: .sessions, title: "Sessions", symbol: "calendar"),
+                        .init(value: .sessions, title: "Sessions", symbol: "inset.filled.rectangle.and.person"),
                         .init(value: .conversations, title: "Chats", symbol: "bubble.left.and.bubble.right")
                     ],
                     selection: Bindable(state).sessionsTab
@@ -132,7 +132,7 @@ struct SessionsCompactBar: View {
         HStack(spacing: 0) {
             SurfaceButton("chevron.left") { state.closeSessions() }
             Spacer(minLength: 0)
-            SessionsTitle()
+            SessionsTitle(state: state)
             Spacer(minLength: 0)
             SurfaceButton("line.3.horizontal.decrease") {
                 state.mode = .sessions
@@ -146,8 +146,12 @@ struct SessionsCompactBar: View {
 }
 
 private struct SessionsTitle: View {
+    let state: AppState
+    
     var body: some View {
-        Text("Sessions")
+        Text(state.sessionsTab == .sessions ? "Sessions" : "Chats")
+            .contentTransition(.numericText())
+            .transition(.blurReplace)
             .font(.system(size: 15, weight: .semibold))
             .foregroundStyle(.white)
             .toolbarTitleShadow()

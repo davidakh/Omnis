@@ -36,9 +36,11 @@ final class AnswerThread: Hashable {
         var isDone = false
     }
 
-    /// Asking during a live session: its transcript is part of the context, and the thread
-    /// isn't saved as a chat.
+    /// Asking during a live session: its transcript is part of the context, and the thread is
+    /// saved with the session (in its Chats) rather than as a chat of its own.
     let isLive: Bool
+    /// Groups this thread's turns in the live session's Chats.
+    @ObservationIgnored private let liveChatID = UUID()
     private(set) var turns: [Turn] = []
     /// The follow-up being typed, kept across the compact bar.
     var draft = ""
@@ -201,7 +203,9 @@ final class AnswerThread: Hashable {
     private func finish(_ index: Int) {
         withAnimation(SurfaceMotion.content) { turns[index].isStreaming = false }
         let turn = turns[index]
-        if !isLive, !turn.failed, !turn.answer.isEmpty {
+        if isLive, !turn.failed, !turn.answer.isEmpty {
+            state.recordLiveTurn(chatID: liveChatID, question: turn.question, answer: turn.answer)
+        } else if !turn.failed, !turn.answer.isEmpty {
             let isNewChat = chatID == nil
             let id = state.store.recordChatTurn(chatID: chatID, question: turn.question, answer: turn.answer)
             chatID = id

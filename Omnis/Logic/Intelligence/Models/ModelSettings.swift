@@ -13,9 +13,8 @@ enum ModelProvider: String, CaseIterable, Identifiable, Codable {
 
     var id: Self { self }
 
-    /// The providers offered in Settings. Omnis runs on Apple Foundation Models for now; the
-    /// Claude and OpenAI adapters stay in the project but aren't exposed.
-    static let selectable: [ModelProvider] = [.appleOnDevice, .applePrivateCloud]
+    /// The providers offered in Settings. Claude and OpenAI use the user's own API key.
+    static let selectable: [ModelProvider] = [.appleOnDevice, .applePrivateCloud, .anthropic, .openAI]
 
     var displayName: String {
         switch self {

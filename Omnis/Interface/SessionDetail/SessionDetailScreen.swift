@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// 320×380: one session's summary or transcript behind its two toolbars.
+/// 340×400: one session's summary or transcript behind its two toolbars.
 struct SessionDetailScreen: View {
     let state: AppState
     let session: Session
@@ -61,7 +61,8 @@ struct SessionDetailScreen: View {
                     SurfaceTabBar(
                         tabs: [
                             .init(value: .summary, title: "Summary", symbol: "text.line.2.summary"),
-                            .init(value: .transcript, title: "Transcript", symbol: "quote.bubble")
+                            .init(value: .transcript, title: "Transcript", symbol: "quote.bubble"),
+                            .init(value: .chats, title: "Chats", symbol: "bubble.left.and.bubble.right")
                         ],
                         selection: Bindable(state).detailTab
                     )
@@ -73,28 +74,58 @@ struct SessionDetailScreen: View {
             }
             .padding(20)
         }
-        .frame(width: 320, height: 380)
+        .frame(width: 340, height: 400)
     }
 }
 
-/// 72 pt capsule: back, session title, play.
+/// 72 pt capsule: back, session title and time, play. Widens to fit the whole title, from
+/// 256 up to 400 pt; longer titles are truncated.
 struct SessionCompactBar: View {
     let state: AppState
     let session: Session
 
     var body: some View {
-        HStack(spacing: 8) {
-            SurfaceButton("chevron.left") { state.showSessions() }
-            Text(session.title)
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(.white)
+        FittingWidth(min: 256, max: 400) {
+            HStack(spacing: 12) {
+                SurfaceButton("chevron.left") { state.showSessions() }
+                VStack(spacing: 1) {
+                    Text(session.title)
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(.white)
+                    Text(session.time)
+                        .font(.system(size: 12))
+                        .foregroundStyle(.white.opacity(0.55))
+                }
                 .lineLimit(1)
                 .frame(maxWidth: .infinity)
-            SurfaceButton("play.fill", style: .prominent) { state.startSession(compact: false) }
+                SurfaceButton("play.fill", style: .prominent) { state.startSession(compact: false) }
+            }
+            .padding(.horizontal, 18)
+            .padding(.vertical, 20)
+            .frame(height: 72)
         }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 20)
-        .frame(width: 256, height: 72)
+    }
+}
+
+/// Sizes its content to its ideal width, kept between `min` and `max`, and lays it out at that
+/// width, so content wider than `max` truncates instead of overflowing.
+private struct FittingWidth: Layout {
+    let min: CGFloat
+    let max: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard let content = subviews.first else { return .zero }
+        let width = Swift.min(Swift.max(content.sizeThatFits(.unspecified).width, min), max)
+        let height = content.sizeThatFits(ProposedViewSize(width: width, height: proposal.height)).height
+        return CGSize(width: width, height: height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        subviews.first?.place(
+            at: CGPoint(x: bounds.midX, y: bounds.midY),
+            anchor: .center,
+            proposal: ProposedViewSize(width: bounds.width, height: bounds.height)
+        )
     }
 }
 
@@ -127,6 +158,7 @@ private struct SessionDetailContent: View {
                 switch tab {
                 case .summary: summary
                 case .transcript: transcript
+                case .chats: chats
                 }
             }
             .onChange(of: currentLine) { _, line in
@@ -202,6 +234,71 @@ private struct SessionDetailContent: View {
                 .animation(.smooth(duration: 0.25), value: isCurrent)
             }
         }
+    }
+
+    /// The questions asked while the session recorded: each thread's turns, threads divided.
+    @ViewBuilder
+    private var chats: some View {
+        let threads = session.chats
+        if threads.isEmpty {
+            // Centered between the toolbars: the 400 pt screen less FadingScroll's clearances.
+            VStack(spacing: 14) {
+                Image(systemName: "bubble.left.and.bubble.right")
+                    .font(.system(size: 44, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.35))
+                Text("No Chats")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.9))
+            }
+            .frame(maxWidth: .infinity, minHeight: 400 - 64 - 76)
+        } else {
+            LazyVStack(alignment: .leading, spacing: 16) {
+                ForEach(Array(threads.enumerated()), id: \.element.id) { index, chat in
+                    if index > 0 {
+                        Divider().overlay(.white.opacity(0.05))
+                    }
+                    VStack(alignment: .leading, spacing: 14) {
+                        ForEach(Array(chat.turns.enumerated()), id: \.offset) { _, turn in
+                            chatTurn(turn)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func chatTurn(_ turn: SessionChat.Turn) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .trailing, spacing: 3) {
+                Text(turn.timestamp)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.white.opacity(0.35))
+                Text(turn.question)
+                    .font(.system(size: 13))
+                    .foregroundStyle(.white)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(.white.opacity(0.12), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            }
+            .frame(maxWidth: .infinity, alignment: .trailing)
+            .padding(.leading, 40)
+
+            Text(Self.formatted(turn.answer))
+                .font(.system(size: 13))
+                .foregroundStyle(.white.opacity(0.85))
+                .lineSpacing(3)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    /// Answers may carry inline markdown, as they do in the chat itself.
+    private static func formatted(_ answer: String) -> AttributedString {
+        let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+        return (try? AttributedString(markdown: answer, options: options)) ?? AttributedString(answer)
     }
 
     private static func paragraphs(of summary: String) -> [String] {

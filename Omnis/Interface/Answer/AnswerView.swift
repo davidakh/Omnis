@@ -15,7 +15,7 @@ struct AnswerView: View {
     @State private var thinkingOrb = OrbAnimation(epoch: .now, epochPhase: 0)
     @FocusState private var fieldFocused: Bool
 
-    private static var size: CGSize { CGSize(width: 320, height: 380) }  // matches sessions and session detail
+    private static var size: CGSize { CGSize(width: 340, height: 400) }  // matches sessions and session detail
     private static var topClear: CGFloat { 60 }      // the thread starts just under the top bar …
     private static var bottomClear: CGFloat { 64 }   // … and ends just above the bottom bar
     private static var font: Font { .system(size: 15) }
@@ -298,7 +298,7 @@ struct AnswerCompactBar: View {
 }
 
 /// The chat's more menu: Rename and Delete above Settings. They're available once the chat has
-/// been saved; live-session threads are never saved, so they get the plain menu.
+/// been saved; live-session threads are never saved as chats, so they get the plain menu.
 private struct ChatMoreMenu: View {
     let state: AppState
     let thread: AnswerThread

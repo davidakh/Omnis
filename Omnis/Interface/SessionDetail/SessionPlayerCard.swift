@@ -2,7 +2,7 @@ import SwiftUI
 
 /// The session's recording and its points of interest, at the top of the summary.
 ///
-/// One layout whether playing or not: the title, the current section, the sections button and
+/// One layout whether playing or not: the current section, the title, the sections button and
 /// play (pause while playing). The sections button opens the list, each section with its start
 /// time; tapping one plays from there. Sessions recorded before audio was saved show only their
 /// sections. Changes blur in and out.
@@ -59,15 +59,15 @@ struct SessionPlayerCard: View {
     private var header: some View {
         HStack(spacing: 8) {
             VStack(alignment: .leading, spacing: 1) {
-                Text(session.title)
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(.white)
                 // Blurs from one section's title to the next as playback moves on.
                 Text(subtitle)
-                    .font(.system(size: 13))
-                    .foregroundStyle(.white.opacity(0.55))
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(.white)
                     .id(subtitle)
                     .transition(.blurReplace)
+                Text(session.title)
+                    .font(.system(size: 13))
+                    .foregroundStyle(.white.opacity(0.55))
             }
             .lineLimit(1)
             .frame(maxWidth: .infinity, alignment: .leading)

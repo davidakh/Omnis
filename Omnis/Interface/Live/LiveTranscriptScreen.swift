@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// 320×380, like sessions: the live transcript scrolls behind a title and the live controls.
+/// 340×400, like sessions: the live transcript scrolls behind a title and the live controls.
 struct LiveTranscriptScreen: View {
     let state: AppState
 
@@ -20,7 +20,7 @@ struct LiveTranscriptScreen: View {
             }
             .padding(20)
         }
-        .frame(width: 320, height: 380)
+        .frame(width: 340, height: 400)
     }
 }
 

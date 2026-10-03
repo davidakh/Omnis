@@ -13,7 +13,7 @@ final class AppState {
         indirect case settings(Mode)
     }
     enum SessionsTab { case sessions, conversations }
-    enum DetailTab { case summary, transcript }
+    enum DetailTab { case summary, transcript, chats }
 
     var mode: Mode = .compact {
         didSet {
@@ -39,6 +39,8 @@ final class AppState {
     let player = SessionPlayer()
     /// The audio folder for the session being recorded.
     @ObservationIgnored private var recordingFolder: String?
+    /// The questions asked during the session being recorded, saved with it.
+    @ObservationIgnored private var liveChats: [SessionChat] = []
     let resolver: ModelResolver
     let index: SessionIndex
     let ask: AskService
@@ -193,6 +195,7 @@ final class AppState {
         recorder.start()
         let folder = AudioStorage.makeFolder()
         recordingFolder = folder
+        liveChats = []
         transcriber.setSource(.microphone, on: settings.useMicrophone)
         transcriber.setSource(.system, on: settings.useSystemAudio)
         transcriber.start(recordingTo: AudioStorage.url(for: folder))
@@ -254,13 +257,31 @@ final class AppState {
     private func saveRecording(liveNotes: LiveNotes? = nil) {
         let folder = recordingFolder
         recordingFolder = nil
+        let chats = liveChats
+        liveChats = []
         guard let recording = recorder.stop(), !recording.lines.isEmpty else {
             // Nothing was said, so nothing is saved, audio included.
             if let folder { AudioStorage.delete(folder) }
             return
         }
-        let session = store.createSession(startedAt: recording.startedAt, lines: recording.lines, audioFolder: folder)
+        let session = store.createSession(
+            startedAt: recording.startedAt,
+            lines: recording.lines,
+            audioFolder: folder,
+            chats: chats
+        )
         Task { [processor] in await processor.process(session, liveNotes: liveNotes) }
+    }
+
+    /// Keeps an answered turn from a live thread, so it's saved in the session's Chats.
+    func recordLiveTurn(chatID: UUID, question: String, answer: String) {
+        guard let startedAt = recorder.startedAt else { return }
+        let turn = SessionChat.Turn(question: question, answer: answer, offset: Date.now.timeIntervalSince(startedAt))
+        if let index = liveChats.firstIndex(where: { $0.id == chatID }) {
+            liveChats[index].turns.append(turn)
+        } else {
+            liveChats.append(SessionChat(id: chatID, turns: [turn]))
+        }
     }
 
     /// The live transcript to answer from, while a session is recording.
