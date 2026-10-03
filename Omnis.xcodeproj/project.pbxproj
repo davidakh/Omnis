@@ -99,7 +99,7 @@
 			packageReferences = (
 				405F9DAC30719A78008979B8 /* XCRemoteSwiftPackageReference "Sparkle" */,
 			);
-			preferredProjectObjectVersion = 77;
+			preferredProjectObjectVersion = 100;
 			productRefGroup = 405F9D17306FF5E8008979B8 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
