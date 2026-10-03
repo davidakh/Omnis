@@ -8,6 +8,8 @@ enum AskEvent {
     case text(String)
     /// The screen was meant to be included but couldn't be captured. Shown under the answer.
     case screenUnavailable(ScreenCaptureError)
+    /// The answer looked at the screen: the app (and window) it read.
+    case screenIncluded(String)
 }
 
 /// Answers a question with the user's chosen model, from context gathered by
@@ -32,7 +34,7 @@ final class AskService {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    let screen = await captureScreenIfEnabled(continuation)
+                    let screen = await captureScreenIfRelevant(question, previous: history.last, into: continuation)
                     let model: ResolvedModel
                     do {
                         model = try await resolver.resolve()
@@ -58,13 +60,20 @@ final class AskService {
         }
     }
 
-    private func captureScreenIfEnabled(
-        _ continuation: AsyncThrowingStream<AskEvent, Error>.Continuation
+    /// Captures the screen only when the question is about it, so unrelated questions stay fast
+    /// and never trigger the Screen Recording prompt.
+    private func captureScreenIfRelevant(
+        _ question: String,
+        previous: AskTurn?,
+        into continuation: AsyncThrowingStream<AskEvent, Error>.Continuation
     ) async -> (snapshot: ScreenSnapshot?, note: String?) {
-        guard settings.includeScreen else { return (nil, nil) }
+        guard await ScreenRelevance(index: builder.index).needsScreen(question, previous: previous) else { return (nil, nil) }
         continuation.yield(.status(String(localized: "Looking at the screen")))
         do {
-            return (try await ScreenContextProvider.capture(), nil)
+            let snapshot = try await ScreenContextProvider.capture()
+            let source = snapshot.windowTitle.map { "\(snapshot.appName) · \($0)" } ?? snapshot.appName
+            continuation.yield(.screenIncluded(source))
+            return (snapshot, nil)
         } catch {
             // Answer anyway: the model is told the screen is missing, and the user sees why.
             let reason = error as? ScreenCaptureError ?? .captureFailed(error.localizedDescription)
@@ -93,7 +102,7 @@ final class AskService {
         try Task.checkCancellation()
 
         continuation.yield(.status(String(localized: "Thinking")))
-        let session = LanguageModelSession(model: model.model, instructions: context.instructions)
+        let session = Self.session(model: model, instructions: context.instructions, history: history)
         let stream = if let image = context.image {
             session.streamResponse {
                 context.prompt
@@ -105,6 +114,26 @@ final class AskService {
         for try await snapshot in stream {
             continuation.yield(.text(snapshot.content))
         }
+    }
+
+    /// How many earlier turns a follow-up carries.
+    static let historyTurns = 3
+
+    /// A session that already holds the thread's earlier turns as real prompts and responses,
+    /// so follow-ups read as a conversation rather than as more context to quote from.
+    private static func session(model: ResolvedModel, instructions: String, history: [AskTurn]) -> LanguageModelSession {
+        guard !history.isEmpty else {
+            return LanguageModelSession(model: model.model, instructions: instructions)
+        }
+        func text(_ content: String) -> [Transcript.Segment] { [.text(Transcript.TextSegment(content: content))] }
+        var entries: [Transcript.Entry] = [
+            .instructions(Transcript.Instructions(segments: text(instructions), toolDefinitions: []))
+        ]
+        for turn in history.suffix(historyTurns) {
+            entries.append(.prompt(Transcript.Prompt(segments: text(turn.question))))
+            entries.append(.response(Transcript.Response(assetIDs: [], segments: text(turn.answer))))
+        }
+        return LanguageModelSession(model: model.model, tools: [], transcript: Transcript(entries: entries))
     }
 
     /// A short, user-facing explanation for a failed answer.

@@ -60,8 +60,8 @@ final class LiveTranscriber {
         recorder.status = String(localized: "Getting ready")
 
         let microphoneAllowed = await AVCaptureDevice.requestAccess(for: .audio)
-        let screenAllowed = CGPreflightScreenCaptureAccess()
-        if !screenAllowed { CGRequestScreenCaptureAccess() }  // prompts once; takes effect next session
+        // Asks at most once per launch; a grant takes effect from the next session.
+        let screenAllowed = ScreenRecordingPermission.ensure()
         guard microphoneAllowed || screenAllowed else {
             recorder.status = String(localized: "Allow Omnis to use the microphone in Privacy & Security to record sessions.")
             return

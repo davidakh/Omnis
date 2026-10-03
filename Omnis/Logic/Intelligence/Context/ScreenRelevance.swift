@@ -4,16 +4,16 @@ import FoundationModels
 /// Where the on-device model thinks the answer to a question lives.
 @Generable
 enum AnswerSource {
-    @Guide(description: "Something open on the user's screen right now: a document, email, web page, code, error or form")
-    case screen
-    @Guide(description: "The user's recorded meetings, calls and conversations")
-    case recordings
-    @Guide(description: "General knowledge, ideas, writing or planning that needs neither")
-    case general
+    case screen, recordings, general
 }
 
 @Generable
 struct AnswerSourceChoice {
+    @Guide(description: """
+        screen: something open on the user's screen right now (document, email, web page, code, error, form). \
+        recordings: the user's recorded meetings, calls and conversations. \
+        general: general knowledge, ideas, writing or planning that needs neither.
+        """)
     var source: AnswerSource
 }
 

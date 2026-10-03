@@ -1,53 +1,32 @@
 import SwiftUI
 
-/// One question and its answer in a conversation.
-private struct Turn: Identifiable {
-    let id = UUID()
-    let question: String
-    /// The answer so far; grows as it streams.
-    var answer = ""
-    /// What's happening before the first words arrive ("Searching your sessions"…).
-    var status = String(localized: "Thinking")
-    var isStreaming = true
-    var failed = false
-    /// Set when the screen should have been included but couldn't be captured.
-    var screenNotice: ScreenCaptureError?
-}
-
-/// A question thread: each answer streams in from `AskService`, and follow-ups carry the
-/// earlier turns as context. Threads from the main ask are saved as chats.
+/// A question thread (see `AnswerThread`): the conversation scrolling behind its two toolbars.
 struct AnswerView: View {
     @Bindable var state: AppState
-    /// The first question, or nil to open empty and wait for one.
-    let question: String?
+    @Bindable var thread: AnswerThread
     /// Shown in the top bar; defaults to the first question.
     var title: String? = nil
     /// The field's placeholder before anything has been asked.
     var emptyPlaceholder = String(localized: "Ask anything")
-    /// Asking during a live session: its transcript is part of the context, and the thread
-    /// isn't saved as a chat.
-    var isLive = false
     let onBack: () -> Void
 
     @Environment(SurfaceState.self) private var surface: SurfaceState?
-    @State private var turns: [Turn] = []
-    @State private var followUp = ""
-    @State private var streamTask: Task<Void, Never>?
-    @State private var chatID: UUID?
     @State private var thinkingOrb = OrbAnimation(epoch: .now, epochPhase: 0)
     @FocusState private var fieldFocused: Bool
 
-    private static var size: CGSize { CGSize(width: 320, height: 360) }
+    private static var size: CGSize { CGSize(width: 320, height: 380) }  // matches sessions and session detail
     private static var topClear: CGFloat { 60 }      // the thread starts just under the top bar …
     private static var bottomClear: CGFloat { 64 }   // … and ends just above the bottom bar
     private static var font: Font { .system(size: 15) }
-    private static var lineHeight: AttributedString.LineHeight { .exact(points: 16) }
+    private static var lineHeight: AttributedString.LineHeight { .exact(points: 21) }
+    private static var bubbleRadius: CGFloat { 20 }
 
-    private var isAnswering: Bool { turns.last?.isStreaming ?? false }
+    private var turns: [AnswerThread.Turn] { thread.turns }
+    private var isAnswering: Bool { thread.isAnswering }
 
     var body: some View {
         ZStack {
-            thread
+            conversation
             VStack(spacing: 0) {
                 topBar
                 Spacer(minLength: 0)
@@ -56,16 +35,12 @@ struct AnswerView: View {
             .padding(20)
         }
         .frame(width: Self.size.width, height: Self.size.height)
+        // Ready for a follow-up whenever nothing is streaming: on opening empty, on returning
+        // from the compact bar, and each time an answer settles.
         .onAppear {
-            guard turns.isEmpty else { return }
-            if let question {
-                ask(question)
-            } else {
-                surface?.makeKey?()
-                fieldFocused = true
-            }
+            if !isAnswering { focusField() }
         }
-        .onDisappear { streamTask?.cancel() }
+        .onChange(of: thread.finishedCount) { focusField() }
     }
 
     // MARK: Bars
@@ -97,11 +72,11 @@ struct AnswerView: View {
                     .frame(height: 32)  // overflows the 32 pt bar, centered on it
                     .transition(.blurReplace)
                 Spacer(minLength: 0)
-                SurfaceButton("stop.fill", style: .prominent) { stop() }
+                SurfaceButton("stop.fill", style: .prominent) { thread.stop() }
                     .transition(.blurReplace)
             } else {
                 // Fills the bar and grows upward with its text, from a capsule into a rounded rect.
-                TextField(turns.isEmpty ? emptyPlaceholder : String(localized: "Ask Followup Question"), text: $followUp, axis: .vertical)
+                TextField(turns.isEmpty ? emptyPlaceholder : String(localized: "Ask Followup Question"), text: $thread.draft, axis: .vertical)
                     .textFieldStyle(.plain)
                     .font(.body)
                     .foregroundStyle(.white)
@@ -120,9 +95,9 @@ struct AnswerView: View {
         .animation(SurfaceMotion.content, value: isAnswering)
     }
 
-    // MARK: Thread
+    // MARK: Conversation
 
-    private var thread: some View {
+    private var conversation: some View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 24) {
@@ -143,6 +118,10 @@ struct AnswerView: View {
                 .padding(.bottom, Self.bottomClear)
             }
             .scrollIndicators(.hidden)
+            // A reopened chat starts at its latest exchange.
+            .onAppear {
+                if turns.count > 1, let last = turns.last { proxy.scrollTo(last.id, anchor: .top) }
+            }
             .onChange(of: turns.count) {
                 guard let last = turns.last else { return }
                 withAnimation(.smooth(duration: 0.45)) { proxy.scrollTo(last.id, anchor: .top) }
@@ -164,14 +143,14 @@ struct AnswerView: View {
         .surfaceScrollable()
     }
 
-    private func turnView(_ turn: Turn) -> some View {
+    private func turnView(_ turn: AnswerThread.Turn) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(turn.question)
                 .font(Self.font)
                 .foregroundStyle(.white)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
-                .background(.white.opacity(0.12), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .background(.white.opacity(0.12), in: RoundedRectangle(cornerRadius: Self.bubbleRadius, style: .continuous))
                 .frame(maxWidth: .infinity, alignment: .trailing)
                 .padding(.leading, 40)
 
@@ -194,12 +173,24 @@ struct AnswerView: View {
             if let notice = turn.screenNotice {
                 ScreenNotice(reason: notice)
                     .transition(.opacity)
+            } else if let source = turn.screenSource {
+                // The screen is only read when the question calls for it; say when it was.
+                Label(String(localized: "Looked at \(source)"), systemImage: "macwindow")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.white.opacity(0.45))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .transition(.opacity)
+            }
+
+            // Only under the latest answer, once it has finished.
+            if turn.id == turns.last?.id, !turn.isStreaming {
+                FeedbackButton(question: turn.question, answer: turn.answer)
+                    .transition(.opacity)
             }
         }
     }
 
-    /// Models answer in light markdown; render the inline parts (bold, italics, code) and keep
-    /// line breaks. Falls back to the plain text while a partial answer doesn't parse.
     private static func formatted(_ answer: String) -> AttributedString {
         let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
         return (try? AttributedString(markdown: answer, options: options)) ?? AttributedString(answer)
@@ -207,76 +198,51 @@ struct AnswerView: View {
 
     // MARK: Asking
 
-    private func ask(_ question: String) {
-        streamTask?.cancel()
-        let history = turns
-            .filter { !$0.isStreaming && !$0.failed }
-            .map { AskTurn(question: $0.question, answer: $0.answer) }
-        turns.append(Turn(question: question))
-        let index = turns.count - 1
-
-        let stream = state.ask.answer(question, history: history, live: isLive ? state.liveContext : nil)
-        streamTask = Task {
-            do {
-                for try await event in stream {
-                    switch event {
-                    case .status(let status):
-                        turns[index].status = status
-                    case .screenUnavailable(let reason):
-                        turns[index].screenNotice = reason
-                    case .text(let text):
-                        if turns[index].answer.isEmpty {
-                            withAnimation(SurfaceMotion.content) { turns[index].answer = text }
-                        } else {
-                            turns[index].answer = text
-                        }
-                    }
-                }
-                finish(index)
-            } catch is CancellationError {
-                // `stop()` already settled the turn.
-            } catch {
-                turns[index].answer = AskService.message(for: error)
-                turns[index].failed = true
-                finish(index)
-            }
-        }
-    }
-
-    private func finish(_ index: Int) {
-        withAnimation(SurfaceMotion.content) { turns[index].isStreaming = false }
-        let turn = turns[index]
-        if !isLive, !turn.failed, !turn.answer.isEmpty {
-            let isNewChat = chatID == nil
-            let id = state.store.recordChatTurn(chatID: chatID, question: turn.question, answer: turn.answer)
-            chatID = id
-            // A new chat starts out named after its question; give it a short title.
-            if isNewChat {
-                Task { [processor = state.processor] in
-                    await processor.titleChat(id, question: turn.question, answer: turn.answer)
-                }
-            }
-        }
+    private func focusField() {
         surface?.makeKey?()
         fieldFocused = true
     }
 
-    /// Stops the answer where it is: whatever has streamed so far becomes the whole answer.
-    private func stop() {
-        streamTask?.cancel()
-        guard let index = turns.indices.last, turns[index].isStreaming else { return }
-        if turns[index].answer.isEmpty {
-            turns[index].answer = String(localized: "Stopped.")
-            turns[index].failed = true
-        }
-        finish(index)
-    }
-
     private func sendFollowUp() {
-        let text = followUp.trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = thread.draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !isAnswering else { return }
-        followUp = ""
-        ask(text)
+        thread.draft = ""
+        thread.ask(text)
+    }
+}
+
+/// 72 pt capsule: back, the thread's title, and stop while an answer streams.
+struct AnswerCompactBar: View {
+    let state: AppState
+    let thread: AnswerThread
+    let onBack: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            SurfaceButton("chevron.left") { onBack() }
+            Group {
+                if let turn = thread.turns.last, turn.isStreaming, turn.answer.isEmpty {
+                    ShimmerText(turn.status)
+                } else {
+                    Text(thread.title ?? thread.turns.first?.question ?? "")
+                        .foregroundStyle(.white)
+                }
+            }
+            .font(.system(size: 15, weight: .semibold))
+            .lineLimit(1)
+            .frame(maxWidth: .infinity)
+            if thread.isAnswering {
+                SurfaceButton("stop.fill", style: .prominent) { thread.stop() }
+                    .transition(.blurReplace)
+            } else {
+                MoreMenu(state: state)
+                    .transition(.blurReplace)
+            }
+        }
+        .animation(SurfaceMotion.content, value: thread.isAnswering)
+        .padding(.horizontal, 18)
+        .padding(.vertical, 20)
+        .frame(width: 256, height: 72)
     }
 }
 
@@ -307,5 +273,48 @@ private struct ScreenNotice: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(8)
         .background(RoundedRectangle(cornerRadius: 16).fill(.ultraThinMaterial))
+    }
+}
+
+/// Opens Mail with a feedback message about the answer above, addressed to the developer.
+/// The question and answer are filled in so the report has context; the user can edit them
+/// before sending.
+private struct FeedbackButton: View {
+    let question: String
+    let answer: String
+
+    @Environment(\.openURL) private var openURL
+
+    private static let address = "david.akhmedbayev@icloud.com"
+
+    var body: some View {
+        Button(action: send) {
+            Image(systemName: "exclamationmark.bubble")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.white.opacity(0.75))
+                .frame(width: 28, height: 28)
+                .background(.ultraThinMaterial, in: Circle())
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .help(String(localized: "Send Feedback"))
+    }
+
+    private func send() {
+        var components = URLComponents()
+        components.scheme = "mailto"
+        components.path = Self.address
+        components.queryItems = [
+            URLQueryItem(name: "subject", value: String(localized: "Omnis Feedback")),
+            URLQueryItem(name: "body", value: """
+
+
+                ---
+                Question: \(question)
+
+                Answer: \(answer.prefix(1500))
+                """)
+        ]
+        if let url = components.url { openURL(url) }
     }
 }

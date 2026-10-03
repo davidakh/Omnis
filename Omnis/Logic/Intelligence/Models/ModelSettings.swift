@@ -50,11 +50,6 @@ final class ModelSettings {
     var openAIModel: String {
         didSet { defaults.set(openAIModel, forKey: Keys.openAIModel) }
     }
-    /// Whether asking also captures the window under the surface. Toggled from the ask
-    /// bar's more menu.
-    var includeScreen: Bool {
-        didSet { defaults.set(includeScreen, forKey: Keys.includeScreen) }
-    }
 
     @ObservationIgnored private let defaults: UserDefaults
 
@@ -65,7 +60,6 @@ final class ModelSettings {
         provider = saved.flatMap { ModelProvider.selectable.contains($0) ? $0 : nil } ?? .appleOnDevice
         anthropicModel = defaults.string(forKey: Keys.anthropicModel) ?? Self.anthropicModels[0].id
         openAIModel = defaults.string(forKey: Keys.openAIModel) ?? "gpt-5"
-        includeScreen = defaults.bool(forKey: Keys.includeScreen)
     }
 
     func apiKey(for provider: ModelProvider) -> String? {
@@ -85,7 +79,6 @@ final class ModelSettings {
         static let provider = "model.provider"
         static let anthropicModel = "model.anthropic.id"
         static let openAIModel = "model.openai.id"
-        static let includeScreen = "ask.includeScreen"
     }
 }
 

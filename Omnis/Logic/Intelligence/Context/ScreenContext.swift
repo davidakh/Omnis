@@ -32,15 +32,32 @@ enum ScreenCaptureError: LocalizedError {
     static let settingsURL = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!
 }
 
+/// The Screen Recording permission, shared by screen context and call-audio recording.
+enum ScreenRecordingPermission {
+    private static var hasRequestedThisLaunch = false
+
+    static var isGranted: Bool { CGPreflightScreenCaptureAccess() }
+
+    /// Returns whether access is granted. If it isn't, asks the system once per launch rather
+    /// than on every capture, so the user isn't prompted again and again.
+    @discardableResult
+    static func ensure() -> Bool {
+        if isGranted { return true }
+        if !hasRequestedThisLaunch {
+            hasRequestedThisLaunch = true
+            CGRequestScreenCaptureAccess()
+        }
+        return false
+    }
+}
+
 /// Captures the frontmost app's frontmost window (never Omnis's own panel) and reads its text.
 enum ScreenContextProvider {
     /// Matches the image size the providers process; anything larger is downscaled anyway.
     private static let maxPixelDimension: CGFloat = 1568
 
     static func capture() async throws -> ScreenSnapshot {
-        guard CGPreflightScreenCaptureAccess() else {
-            // Shows the system prompt the first time; afterwards the user grants it in Settings.
-            CGRequestScreenCaptureAccess()
+        guard ScreenRecordingPermission.ensure() else {
             throw ScreenCaptureError.permissionNeeded
         }
 

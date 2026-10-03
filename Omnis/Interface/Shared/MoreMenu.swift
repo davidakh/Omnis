@@ -18,15 +18,19 @@ struct MoreMenu<Items: View>: View {
 
     var body: some View {
         SurfaceMenuButton("ellipsis") {
-            if let items {
-                items
-                Divider()
+            Group {
+                if let items {
+                    items
+                    Divider()
+                }
+                Button("Settings…", systemImage: "gearshape") { state.openSettings() }
+                if showsQuit {
+                    Button("Quit", systemImage: "power") { state.quit() }
+                        .keyboardShortcut("q")
+                }
             }
-            Button("Settings…", systemImage: "gearshape") { state.openSettings() }
-            if showsQuit {
-                Button("Quit", systemImage: "power") { state.quit() }
-                    .keyboardShortcut("q")
-            }
+            // macOS menus show titles only by default; show each item's symbol too.
+            .labelStyle(.titleAndIcon)
         }
     }
 }

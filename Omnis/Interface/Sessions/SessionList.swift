@@ -8,6 +8,21 @@ struct SessionList: View {
     var body: some View {
         FadingScroll {
             LazyVStack(spacing: 2) {
+                if state.isFiltering, state.filteredItems?.isEmpty == true {
+                    // While the model is still matching by meaning, results may yet appear.
+                    Group {
+                        if state.isRefiningFilter {
+                            ShimmerText(String(localized: "Searching"))
+                        } else {
+                            Text("No matches")
+                                .foregroundStyle(.white.opacity(0.55))
+                        }
+                    }
+                    .font(.system(size: 13))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                }
                 ForEach(state.items(for: state.sessionsTab)) { session in
                     SessionRow(state: state, session: session)
                 }

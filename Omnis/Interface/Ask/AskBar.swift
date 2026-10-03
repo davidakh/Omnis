@@ -33,10 +33,7 @@ struct AskBar: View {
                 .lineLimit(1...10)
                 .focused($fieldFocused)
                 .onSubmit(send)
-            MoreMenu(state: state, showsQuit: true) {
-                // Captures the window under the surface along with the question.
-                Toggle("Screen Context", systemImage: "macwindow", isOn: Bindable(state.settings).includeScreen)
-            }
+            MoreMenu(state: state, showsQuit: true)
             switch context {
             case .main:
                 SurfaceButton("list.bullet") { state.showSessions() }
@@ -89,7 +86,7 @@ struct AskBar: View {
         guard !isEmpty else { return }
         let question = state.text.trimmingCharacters(in: .whitespacesAndNewlines)
         state.text = ""
-        state.mode = context == .main ? .answer(question) : .liveAnswer(question)
+        state.openAnswer(question, live: context != .main)
     }
 }
 

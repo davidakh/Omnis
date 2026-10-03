@@ -19,6 +19,8 @@ final class AnswerThread: Hashable {
         var failed = false
         /// Set when the screen should have been included but couldn't be captured.
         var screenNotice: ScreenCaptureError?
+        /// The app (and window) the answer looked at, when it used the screen.
+        var screenSource: String?
     }
 
     /// Asking during a live session: its transcript is part of the context, and the thread
@@ -34,11 +36,37 @@ final class AnswerThread: Hashable {
     @ObservationIgnored private var streamTask: Task<Void, Never>?
     @ObservationIgnored private var chatID: UUID?
 
+    /// Shown in the top bar instead of the first question (a saved chat's title).
+    let title: String?
+    /// Reopened from the Chats list, so leaving returns there.
+    let isResumed: Bool
+
     /// Starts answering `question` right away, or opens empty to wait for one.
     init(state: AppState, question: String?, isLive: Bool) {
         self.state = state
         self.isLive = isLive
+        self.title = nil
+        self.isResumed = false
         if let question { ask(question) }
+    }
+
+    /// Reopens a saved chat with its earlier turns, so the conversation can continue; new turns
+    /// are saved to the same chat.
+    init(state: AppState, resuming chat: Session) {
+        self.state = state
+        self.isLive = false
+        self.title = chat.title
+        self.isResumed = true
+        self.chatID = chat.id
+        var question: String?
+        for line in chat.orderedLines {
+            if line.speaker == "You" {
+                question = line.text
+            } else if let asked = question {
+                turns.append(Turn(question: asked, answer: line.text, isStreaming: false))
+                question = nil
+            }
+        }
     }
 
     var isAnswering: Bool { turns.last?.isStreaming ?? false }
@@ -47,7 +75,7 @@ final class AnswerThread: Hashable {
         streamTask?.cancel()
         let history = turns
             .filter { !$0.isStreaming && !$0.failed }
-            .map { AskTurn(question: $0.question, answer: $0.answer) }
+            .map { AskTurn(question: $0.question, answer: $0.answer, usedScreen: $0.screenSource != nil) }
         turns.append(Turn(question: question))
         let index = turns.count - 1
 
@@ -60,6 +88,8 @@ final class AnswerThread: Hashable {
                         turns[index].status = status
                     case .screenUnavailable(let reason):
                         turns[index].screenNotice = reason
+                    case .screenIncluded(let source):
+                        turns[index].screenSource = source
                     case .text(let text):
                         if turns[index].answer.isEmpty {
                             withAnimation(SurfaceMotion.content) { turns[index].answer = text }

@@ -24,11 +24,13 @@ struct RootView: View {
             case .live: LiveBar(state: state)
             case .liveCompact: LiveCompactBar(state: state)
             case .liveTranscript: LiveTranscriptScreen(state: state)
-            case .answer(let question):
-                AnswerView(state: state, question: question) { state.closeAnswer() }
+            case .answer(let thread):
+                AnswerView(state: state, thread: thread) { state.closeAnswer() }
+            case .answerCompact(let thread):
+                AnswerCompactBar(state: state, thread: thread) { state.closeAnswer() }
             case .liveAsk: AskBar(state: state, context: .liveSession)
-            case .liveAnswer(let question):
-                AnswerView(state: state, question: question, isLive: true) { state.mode = .live }
+            case .liveAnswer(let thread):
+                AnswerView(state: state, thread: thread) { state.mode = .live }
             case .settings: SettingsScreen(state: state)
             }
         }
@@ -45,17 +47,23 @@ struct RootView: View {
         case .live: { state.mode = .liveCompact }
         case .liveCompact: nil
         case .liveTranscript: { state.mode = .live }
-        case .answer: { state.closeAnswer() }
+        // Pulling a chat down tucks it into its compact bar rather than closing it.
+        case .answer(let thread): { state.mode = .answerCompact(thread) }
+        case .answerCompact: nil
         case .liveAsk, .liveAnswer: { state.mode = .live }
         case .settings: { state.closeSettings() }
         }
     }
 
-    /// Pulling to the right leaves a session for the sessions list.
+    /// Pulling to the right leaves a session (or a reopened chat) for the sessions list, and the
+    /// sessions list for home.
     private var backAction: (() -> Void)? {
         switch state.mode {
         case .session, .sessionCompact: { state.showSessions() }
-        case .compact, .expanded, .sessions, .sessionsCompact, .live, .liveCompact, .liveTranscript, .answer, .liveAsk, .liveAnswer, .settings: nil
+        case .sessions, .sessionsCompact: { state.closeSessions() }
+        case .answer(let thread), .answerCompact(let thread):
+            thread.isResumed ? { state.closeAnswer() } : nil
+        case .compact, .expanded, .live, .liveCompact, .liveTranscript, .liveAsk, .liveAnswer, .settings: nil
         }
     }
 
@@ -65,6 +73,7 @@ struct RootView: View {
         case .sessionsCompact: { state.mode = .sessions }
         case .sessionCompact(let session): { state.mode = .session(session) }
         case .liveCompact: { state.mode = .live }
+        case .answerCompact(let thread): { state.mode = .answer(thread) }
         case .expanded, .sessions, .session, .live, .liveTranscript, .answer, .liveAsk, .liveAnswer, .settings: nil
         }
     }

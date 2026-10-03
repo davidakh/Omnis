@@ -8,14 +8,19 @@ final class AppState {
         case compact, expanded, sessions, sessionsCompact
         case session(Session), sessionCompact(Session)
         case live, liveCompact, liveTranscript
-        case answer(String), liveAsk, liveAnswer(String)
+        case answer(AnswerThread), answerCompact(AnswerThread), liveAsk, liveAnswer(AnswerThread)
         /// Settings, opened from any more menu; remembers the screen to return to.
         indirect case settings(Mode)
     }
     enum SessionsTab { case sessions, conversations }
     enum DetailTab { case summary, transcript }
 
-    var mode: Mode = .compact
+    var mode: Mode = .compact {
+        didSet {
+            // A thread that's been left (not just compacted, or covered by settings) stops answering.
+            if let old = oldValue.thread, old !== mode.thread { old.cancel() }
+        }
+    }
     var text = ""
     var sessionsTab: SessionsTab = .sessions
     var detailTab: DetailTab = .summary
@@ -42,8 +47,11 @@ final class AppState {
         ask = AskService(resolver: resolver, builder: ContextBuilder(index: index), settings: settings)
         processor = SessionProcessor(store: store, index: index, resolver: resolver)
 
-        // Finish anything left from a previous launch.
-        Task { [processor] in await processor.processPending() }
+        // Finish anything left from a previous launch, and bring older indexes up to date.
+        Task { [processor, index] in
+            await processor.processPending()
+            index.reindexIfNeeded()
+        }
     }
 
     // MARK: Sessions list
@@ -54,7 +62,73 @@ final class AppState {
     var renamingID: UUID?
 
     func items(for tab: SessionsTab) -> [Session] {
-        tab == .sessions ? store.sessions : store.chats
+        let all = tab == .sessions ? store.sessions : store.chats
+        guard isFiltering, let filteredItems else { return all }
+        return filteredItems
+    }
+
+    // MARK: Sessions filter
+
+    /// The filter field replaces the bottom toolbar while it's open.
+    var isFiltering = false
+    /// Natural-language query, matched by meaning against titles, summaries and transcripts.
+    var filterQuery = "" {
+        didSet { if filterQuery != oldValue { scheduleFilter() } }
+    }
+    /// Matches for the current query and tab, best first; nil shows everything.
+    private(set) var filteredItems: [Session]?
+    /// The on-device model is still matching by meaning; the list shows instant matches meanwhile.
+    private(set) var isRefiningFilter = false
+    @ObservationIgnored private var filterTask: Task<Void, Never>?
+
+    func startFiltering() {
+        isSelecting = false
+        selection.removeAll()
+        renamingID = nil
+        isFiltering = true
+    }
+
+    func stopFiltering() {
+        filterTask?.cancel()
+        isFiltering = false
+        isRefiningFilter = false
+        filterQuery = ""
+        filteredItems = nil
+    }
+
+    /// Re-runs the filter now, e.g. after switching tabs or changing the list: instant matches
+    /// right away, then the on-device model's matches by meaning.
+    func applyFilter() {
+        filterTask?.cancel()
+        let query = filterQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard isFiltering, !query.isEmpty else {
+            filteredItems = nil
+            isRefiningFilter = false
+            return
+        }
+        let tab = sessionsTab
+        let all = tab == .sessions ? store.sessions : store.chats
+        filteredItems = index.filter(all, matching: query)
+        isRefiningFilter = true
+        filterTask = Task { [weak self, index] in
+            let refined = await index.refine(all, matching: query)
+            guard let self, !Task.isCancelled else { return }
+            // Only if nothing changed while the model was reading.
+            guard self.isFiltering, self.sessionsTab == tab,
+                  self.filterQuery.trimmingCharacters(in: .whitespacesAndNewlines) == query else { return }
+            if let refined { self.filteredItems = refined }
+            self.isRefiningFilter = false
+        }
+    }
+
+    /// Waits for a pause in typing so the search doesn't run on every keystroke.
+    private func scheduleFilter() {
+        filterTask?.cancel()
+        filterTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(250))
+            guard !Task.isCancelled else { return }
+            self?.applyFilter()
+        }
     }
 
     func toggleSelecting() {
@@ -77,6 +151,7 @@ final class AppState {
         store.delete(ids)
         index.invalidate()
         selection.subtract(ids)
+        if isFiltering { applyFilter() }
     }
 
     /// Deletes the selection and leaves select mode.
@@ -91,6 +166,7 @@ final class AppState {
         guard !trimmed.isEmpty else { return }
         store.rename(id, to: trimmed)
         index.invalidate()
+        if isFiltering { applyFilter() }
     }
 
     // MARK: Live session
@@ -159,6 +235,11 @@ final class AppState {
     }
 
     func openSession(_ session: Session) {
+        // A saved chat reopens as the conversation itself, ready for a follow-up.
+        if session.kind == .chat {
+            mode = .answer(AnswerThread(state: self, resuming: session))
+            return
+        }
         detailTab = .summary
         mode = .session(session)
     }
@@ -187,15 +268,39 @@ final class AppState {
         mode = .liveAsk
     }
 
-    /// Leaving an answer returns to a clean, empty expanded ask.
+    /// Opens a thread answering `question`, from the main ask or during a live session.
+    func openAnswer(_ question: String, live: Bool) {
+        let thread = AnswerThread(state: self, question: question, isLive: live)
+        mode = live ? .liveAnswer(thread) : .answer(thread)
+    }
+
+    /// Leaving an answer returns to the Chats list if that's where it was opened, otherwise to
+    /// a clean, empty expanded ask.
     func closeAnswer() {
+        if mode.thread?.isResumed == true {
+            sessionsTab = .conversations
+            showSessions()
+            return
+        }
         text = ""
         mode = .expanded
     }
 
     /// Leaving sessions always lands on a clean, empty expanded ask.
     func closeSessions() {
+        stopFiltering()
         text = ""
         mode = .expanded
+    }
+}
+
+extension AppState.Mode {
+    /// The question thread this screen shows, if any.
+    var thread: AnswerThread? {
+        switch self {
+        case .answer(let thread), .answerCompact(let thread), .liveAnswer(let thread): thread
+        case .settings(let previous): previous.thread
+        default: nil
+        }
     }
 }
