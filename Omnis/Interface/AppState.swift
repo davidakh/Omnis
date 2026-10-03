@@ -19,6 +19,11 @@ final class AppState {
         didSet {
             // A thread that's been left (not just compacted, or covered by settings) stops answering.
             if let old = oldValue.thread, old !== mode.thread { old.cancel() }
+            // Playback belongs to session detail (and its compact bar); leaving it stops.
+            switch mode {
+            case .session, .sessionCompact: break
+            default: player.unload()
+            }
         }
     }
     var text = ""
@@ -31,6 +36,9 @@ final class AppState {
     let settings: ModelSettings
     let recorder: LiveRecorder
     let transcriber: LiveTranscriber
+    let player = SessionPlayer()
+    /// The audio folder for the session being recorded.
+    @ObservationIgnored private var recordingFolder: String?
     let resolver: ModelResolver
     let index: SessionIndex
     let ask: AskService
@@ -46,6 +54,8 @@ final class AppState {
         index = SessionIndex(store: store)
         ask = AskService(resolver: resolver, builder: ContextBuilder(index: index), settings: settings)
         processor = SessionProcessor(store: store, index: index, resolver: resolver)
+        // Notes for the summary are written as the session records, so it's ready soon after.
+        recorder.onLinesChanged = { [processor] lines in processor.liveTranscriptChanged(lines) }
 
         // Finish anything left from a previous launch, and bring older indexes up to date.
         Task { [processor, index] in
@@ -181,9 +191,40 @@ final class AppState {
     func startSession(compact: Bool) {
         isPaused = false
         recorder.start()
-        transcriber.start()
+        let folder = AudioStorage.makeFolder()
+        recordingFolder = folder
+        transcriber.setSource(.microphone, on: settings.useMicrophone)
+        transcriber.setSource(.system, on: settings.useSystemAudio)
+        transcriber.start(recordingTo: AudioStorage.url(for: folder))
+        processor.liveSessionStarted()
         setOrbShape(.square)
         mode = compact ? .liveCompact : .live
+    }
+
+    // MARK: Context sources
+
+    /// Whether sessions hear the microphone; applies right away to a session in progress.
+    var usesMicrophone: Bool {
+        get { settings.useMicrophone }
+        set {
+            settings.useMicrophone = newValue
+            transcriber.setSource(.microphone, on: newValue)
+        }
+    }
+
+    /// Whether sessions hear the Mac's audio output; applies right away to a session in progress.
+    var usesSystemAudio: Bool {
+        get { settings.useSystemAudio }
+        set {
+            settings.useSystemAudio = newValue
+            transcriber.setSource(.system, on: newValue)
+        }
+    }
+
+    /// Whether answers may look at the screen.
+    var usesScreen: Bool {
+        get { settings.useScreen }
+        set { settings.useScreen = newValue }
     }
 
     /// Paused shows the small lit circle; recording shows the square.
@@ -200,16 +241,26 @@ final class AppState {
         isPaused = false
         setOrbShape(.dots)
         mode = .compact
+        // Load the model while the last words finish transcribing.
+        processor.prepareForSummary()
         Task {
             await transcriber.stop()
-            saveRecording()
+            let notes = await processor.finishLiveNotes()
+            saveRecording(liveNotes: notes)
         }
     }
 
-    private func saveRecording() {
-        guard let recording = recorder.stop(), !recording.lines.isEmpty else { return }
-        let session = store.createSession(startedAt: recording.startedAt, lines: recording.lines)
-        Task { [processor] in await processor.process(session) }
+    /// Saves the recording and summarizes it, picking up from any notes written while it recorded.
+    private func saveRecording(liveNotes: LiveNotes? = nil) {
+        let folder = recordingFolder
+        recordingFolder = nil
+        guard let recording = recorder.stop(), !recording.lines.isEmpty else {
+            // Nothing was said, so nothing is saved, audio included.
+            if let folder { AudioStorage.delete(folder) }
+            return
+        }
+        let session = store.createSession(startedAt: recording.startedAt, lines: recording.lines, audioFolder: folder)
+        Task { [processor] in await processor.process(session, liveNotes: liveNotes) }
     }
 
     /// The live transcript to answer from, while a session is recording.
@@ -249,7 +300,10 @@ final class AppState {
     func quit() {
         // Save what's been transcribed so far (including words still in progress) right away;
         // there's no time to wait for the speech model to finish.
-        if recorder.isRecording { saveRecording() }
+        if recorder.isRecording {
+            transcriber.finishWriting()  // finalize the audio files so they play
+            saveRecording()
+        }
         NSApplication.shared.terminate(nil)
     }
 

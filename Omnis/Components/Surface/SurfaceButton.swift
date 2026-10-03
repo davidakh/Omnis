@@ -40,3 +40,21 @@ struct SurfaceButton: View {
         }
     }
 }
+
+/// A `SurfaceButton` look-alike that opens the share sheet for `item`.
+struct SurfaceShareButton: View {
+    let item: String
+    var subject: String? = nil
+
+    var body: some View {
+        ShareLink(item: item, subject: subject.map { Text($0) }) {
+            Image(systemName: "square.and.arrow.up")
+                .font(.system(size: 15, weight: .medium))
+                .foregroundStyle(.white)
+                .frame(width: 32, height: 32)
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .glassEffect(.clear.interactive(), in: Circle())
+    }
+}
