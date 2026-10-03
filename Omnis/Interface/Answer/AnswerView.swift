@@ -247,7 +247,15 @@ struct AnswerView: View {
         withAnimation(SurfaceMotion.content) { turns[index].isStreaming = false }
         let turn = turns[index]
         if !isLive, !turn.failed, !turn.answer.isEmpty {
-            chatID = state.store.recordChatTurn(chatID: chatID, question: turn.question, answer: turn.answer)
+            let isNewChat = chatID == nil
+            let id = state.store.recordChatTurn(chatID: chatID, question: turn.question, answer: turn.answer)
+            chatID = id
+            // A new chat starts out named after its question; give it a short title.
+            if isNewChat {
+                Task { [processor = state.processor] in
+                    await processor.titleChat(id, question: turn.question, answer: turn.answer)
+                }
+            }
         }
         surface?.makeKey?()
         fieldFocused = true
@@ -280,17 +288,24 @@ private struct ScreenNotice: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Label(reason.localizedDescription, systemImage: "macwindow.badge.plus")
+            Label(reason.localizedDescription, systemImage: "macwindow")
                 .font(.system(size: 11))
+                .padding(.horizontal, 2)
                 .foregroundStyle(.white.opacity(0.55))
                 .fixedSize(horizontal: false, vertical: true)
             if case .permissionNeeded = reason {
-                Button("Open Privacy Settings") { openURL(ScreenCaptureError.settingsURL) }
+                Button("Open Settings") { openURL(ScreenCaptureError.settingsURL) }
                     .buttonStyle(.plain)
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 24)
+                    .background(.quinary)
+                    .clipShape(Capsule())
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(8)
+        .background(RoundedRectangle(cornerRadius: 16).fill(.ultraThinMaterial))
     }
 }

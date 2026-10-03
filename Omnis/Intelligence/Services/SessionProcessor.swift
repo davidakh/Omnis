@@ -4,10 +4,17 @@ import FoundationModels
 /// What the model writes for a finished session.
 @Generable
 struct SessionDigest {
-    @Guide(description: "A specific title for the session, at most six words")
+    @Guide(description: "A specific two- or three-word title naming the main topic, like \"Pricing Page Redesign\"")
     var title: String
     @Guide(description: "Two to four short paragraphs covering the topics, decisions and next steps")
     var summary: String
+}
+
+/// A short name for a chat, from its first question and answer.
+@Generable
+struct ChatTitle {
+    @Guide(description: "A specific two- or three-word title naming the topic, like \"Swift Concurrency\"")
+    var title: String
 }
 
 /// Runs after a session ends: writes its title and summary, then indexes it. Transcripts
@@ -25,7 +32,7 @@ final class SessionProcessor {
         self.resolver = resolver
     }
 
-    /// Picks up sessions that ended (or were seeded) without finishing, e.g. after a quit.
+    /// Picks up sessions that ended without finishing, e.g. after a quit.
     func processPending() async {
         for session in store.unprocessedSessions() {
             await process(session)
@@ -39,8 +46,8 @@ final class SessionProcessor {
 
         let transcript = session.transcriptText
         if !transcript.isEmpty, let digest = await digest(of: transcript) {
-            if !session.hasCustomTitle {
-                session.title = digest.title.trimmingCharacters(in: .whitespacesAndNewlines.union(.init(charactersIn: "\"")))
+            if !session.hasCustomTitle, let title = Self.shortTitle(digest.title) {
+                session.title = title
             }
             session.summary = digest.summary.trimmingCharacters(in: .whitespacesAndNewlines)
             session.isProcessed = true
@@ -49,6 +56,32 @@ final class SessionProcessor {
         // `processPending` adds the summary and re-indexes.
         store.save()
         index.index(session)
+    }
+
+    /// Names a new chat after its first exchange. Titles are short, so the on-device model is
+    /// used directly: it's fast and always available.
+    func titleChat(_ id: UUID, question: String, answer: String) async {
+        guard let model = try? resolver.onDevice() else { return }
+        let session = LanguageModelSession(
+            model: model.model,
+            instructions: "You name conversations with short, specific titles."
+        )
+        let prompt = "Title this conversation.\n\nQuestion: \(question.prefix(600))\nAnswer: \(answer.prefix(900))"
+        guard let response = try? await session.respond(to: prompt, generating: ChatTitle.self),
+              let title = Self.shortTitle(response.content.title) else { return }
+        store.setGeneratedTitle(title, for: id)
+    }
+
+    /// Cleans a generated title and keeps it to at most three words: models occasionally run
+    /// long or wrap the title in quotes.
+    static func shortTitle(_ raw: String) -> String? {
+        let words = raw
+            .replacingOccurrences(of: "Title:", with: "")
+            .components(separatedBy: .whitespacesAndNewlines)
+            .map { $0.trimmingCharacters(in: .punctuationCharacters.subtracting(.init(charactersIn: "&+-'"))) }
+            .filter { !$0.isEmpty }
+        guard !words.isEmpty else { return nil }
+        return words.prefix(3).joined(separator: " ")
     }
 
     // MARK: - Summarizing

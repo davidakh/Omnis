@@ -20,7 +20,7 @@ enum ScreenCaptureError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .permissionNeeded:
-            String(localized: "Screen not included. Allow Omnis under Screen & System Audio Recording in Privacy & Security.")
+            String(localized: "Enable screen context for Omnis")
         case .noWindow:
             String(localized: "Screen not included: there's no window to look at.")
         case .captureFailed(let reason):

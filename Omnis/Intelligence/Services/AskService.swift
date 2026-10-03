@@ -33,10 +33,18 @@ final class AskService {
             let task = Task {
                 do {
                     let screen = await captureScreenIfEnabled(continuation)
-                    let model = try await resolver.resolve()
+                    let model: ResolvedModel
+                    do {
+                        model = try await resolver.resolve()
+                    } catch where settings.provider == .applePrivateCloud {
+                        // Private Cloud Compute can't be used (e.g. not entitled): answer on device.
+                        model = try resolver.onDevice()
+                    }
                     do {
                         try await respond(question, history: history, live: live, screen: screen, model: model, into: continuation)
-                    } catch where model.provider == .applePrivateCloud && Self.isPrivateCloudFailure(error) {
+                    } catch where model.provider == .applePrivateCloud && !(error is CancellationError) {
+                        // Network, quota, service or system failures: retry on device rather than
+                        // leaving the user without an answer.
                         continuation.yield(.status(String(localized: "Answering on device")))
                         let fallback = try resolver.onDevice()
                         try await respond(question, history: history, live: live, screen: screen, model: fallback, into: continuation)
@@ -96,14 +104,6 @@ final class AskService {
         }
         for try await snapshot in stream {
             continuation.yield(.text(snapshot.content))
-        }
-    }
-
-    private static func isPrivateCloudFailure(_ error: Error) -> Bool {
-        guard let error = error as? PrivateCloudComputeLanguageModel.Error else { return false }
-        switch error {
-        case .networkFailure, .serviceUnavailable, .quotaLimitReached: return true
-        @unknown default: return false
         }
     }
 

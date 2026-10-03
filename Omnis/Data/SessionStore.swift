@@ -20,10 +20,28 @@ final class SessionStore {
         } catch {
             fatalError("Couldn't open the session store: \(error)")
         }
-        #if DEBUG
-        MockData.seedIfEmpty(context)
-        #endif
+        if !inMemory { removeSampleData() }
         reload()
+    }
+
+    /// Earlier development builds seeded sample sessions and chats. Removes exactly those, once:
+    /// sample sessions kept their seeded titles (marked custom so they were never retitled), and
+    /// sample chats had no turns. Anything the user created is left alone.
+    private func removeSampleData() {
+        let key = "store.removedSampleData"
+        guard !UserDefaults.standard.bool(forKey: key) else { return }
+        let sampleSessions: Set<String> = [
+            "Onboarding launch sync", "Call with Roy", "Quarterly report review", "Lisbon trip planning"
+        ]
+        let sampleChats: Set<String> = ["Swift concurrency", "Recipe swap", "Gift ideas", "Workout plan"]
+
+        for session in (try? context.fetch(FetchDescriptor<Session>())) ?? [] {
+            let isSampleSession = session.kind == .session && session.hasCustomTitle && sampleSessions.contains(session.title)
+            let isSampleChat = session.kind == .chat && session.lines.isEmpty && sampleChats.contains(session.title)
+            if isSampleSession || isSampleChat { context.delete(session) }
+        }
+        try? context.save()
+        UserDefaults.standard.set(true, forKey: key)
     }
 
     func reload() {
@@ -91,6 +109,13 @@ final class SessionStore {
         }
         save()
         return chat.id
+    }
+
+    /// Applies a generated title, unless the user has renamed the session or chat themselves.
+    func setGeneratedTitle(_ title: String, for id: UUID) {
+        guard let session = session(withID: id), !session.hasCustomTitle else { return }
+        session.title = title
+        save()
     }
 
     func rename(_ id: UUID, to title: String) {

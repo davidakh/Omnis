@@ -24,7 +24,8 @@ final class AppState {
 
     let store: SessionStore
     let settings: ModelSettings
-    let recorder = LiveRecorder()
+    let recorder: LiveRecorder
+    let transcriber: LiveTranscriber
     let resolver: ModelResolver
     let index: SessionIndex
     let ask: AskService
@@ -33,12 +34,15 @@ final class AppState {
     init(store: SessionStore = SessionStore(), settings: ModelSettings = ModelSettings()) {
         self.store = store
         self.settings = settings
+        let recorder = LiveRecorder()
+        self.recorder = recorder
+        transcriber = LiveTranscriber(recorder: recorder)
         resolver = ModelResolver(settings: settings)
         index = SessionIndex(store: store)
         ask = AskService(resolver: resolver, builder: ContextBuilder(index: index), settings: settings)
         processor = SessionProcessor(store: store, index: index, resolver: resolver)
 
-        // Finish anything left from a previous launch (and index seeded sessions).
+        // Finish anything left from a previous launch.
         Task { [processor] in await processor.processPending() }
     }
 
@@ -101,6 +105,7 @@ final class AppState {
     func startSession(compact: Bool) {
         isPaused = false
         recorder.start()
+        transcriber.start()
         setOrbShape(.square)
         mode = compact ? .liveCompact : .live
     }
@@ -109,14 +114,23 @@ final class AppState {
     func togglePause() {
         isPaused.toggle()
         recorder.setPaused(isPaused)
+        transcriber.setPaused(isPaused)
         setOrbShape(isPaused ? .circle : .square)
     }
 
-    /// Saves the session, then titles, summarizes and indexes it in the background.
+    /// Stops recording, lets the last words finish transcribing, saves the session, then titles,
+    /// summarizes and indexes it in the background.
     func endSession() {
         isPaused = false
         setOrbShape(.dots)
         mode = .compact
+        Task {
+            await transcriber.stop()
+            saveRecording()
+        }
+    }
+
+    private func saveRecording() {
         guard let recording = recorder.stop(), !recording.lines.isEmpty else { return }
         let session = store.createSession(startedAt: recording.startedAt, lines: recording.lines)
         Task { [processor] in await processor.process(session) }
@@ -124,7 +138,7 @@ final class AppState {
 
     /// The live transcript to answer from, while a session is recording.
     var liveContext: (startedAt: Date, lines: [LiveLine])? {
-        recorder.startedAt.map { ($0, recorder.lines) }
+        recorder.startedAt.map { ($0, recorder.transcriptSoFar) }
     }
 
     /// Morphs the orb to `shape` (the shader crossfades over `OrbAnimation.morphDuration`).
@@ -152,7 +166,9 @@ final class AppState {
     /// Quits the app. A session that's still recording is saved first; its summary and index
     /// are finished on the next launch.
     func quit() {
-        if recorder.isRecording { endSession() }
+        // Save what's been transcribed so far (including words still in progress) right away;
+        // there's no time to wait for the speech model to finish.
+        if recorder.isRecording { saveRecording() }
         NSApplication.shared.terminate(nil)
     }
 

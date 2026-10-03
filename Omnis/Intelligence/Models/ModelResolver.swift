@@ -1,5 +1,6 @@
 import Foundation
 import FoundationModels
+import Security
 
 /// A model ready to prompt, plus what context building needs to know about it.
 struct ResolvedModel {
@@ -28,6 +29,9 @@ enum ModelUnavailableError: LocalizedError {
     case deviceNotEligible
     case modelNotReady
     case privateCloudUnavailable
+    /// The app wasn't signed with the managed Private Cloud Compute entitlement, so the system
+    /// rejects every request even though the model reports itself available.
+    case privateCloudNotEntitled
     case missingAPIKey(ModelProvider)
 
     var errorDescription: String? {
@@ -40,6 +44,8 @@ enum ModelUnavailableError: LocalizedError {
             String(localized: "The on-device model is still downloading. Try again shortly.")
         case .privateCloudUnavailable:
             String(localized: "Private Cloud Compute isn't available right now.")
+        case .privateCloudNotEntitled:
+            String(localized: "This build of Omnis isn't signed for Private Cloud Compute.")
         case .missingAPIKey(let provider):
             String(localized: "Add your \(provider.displayName) API key in Settings.")
         }
@@ -63,6 +69,9 @@ struct ModelResolver {
             return try onDevice()
 
         case .applePrivateCloud:
+            guard Self.hasPrivateCloudEntitlement else {
+                throw ModelUnavailableError.privateCloudNotEntitled
+            }
             let model = PrivateCloudComputeLanguageModel()
             guard case .available = model.availability else {
                 throw ModelUnavailableError.privateCloudUnavailable
@@ -127,10 +136,22 @@ struct ModelResolver {
         case .appleOnDevice:
             return (try? onDevice()) == nil ? String(localized: "Unavailable on this Mac") : nil
         case .applePrivateCloud:
+            guard Self.hasPrivateCloudEntitlement else {
+                return String(localized: "Not enabled for this build · answers on device")
+            }
             if case .available = PrivateCloudComputeLanguageModel().availability { return nil }
-            return String(localized: "Unavailable")
+            return String(localized: "Unavailable · answers on device")
         case .anthropic, .openAI:
             return settings.apiKey(for: provider) == nil ? String(localized: "Needs an API key") : nil
         }
     }
+
+    /// Whether this process was signed with the Private Cloud Compute entitlement. Without it,
+    /// `PrivateCloudComputeLanguageModel` still reports `.available`, but every request fails.
+    static let hasPrivateCloudEntitlement: Bool = {
+        guard let task = SecTaskCreateFromSelf(nil),
+              let value = SecTaskCopyValueForEntitlement(task, "com.apple.developer.private-cloud-compute" as CFString, nil)
+        else { return false }
+        return (value as? Bool) ?? false
+    }()
 }

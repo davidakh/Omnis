@@ -35,7 +35,7 @@ struct AskBar: View {
                 .onSubmit(send)
             MoreMenu(state: state, showsQuit: true) {
                 // Captures the window under the surface along with the question.
-                Toggle("Include Screen", systemImage: "macwindow", isOn: Bindable(state.settings).includeScreen)
+                Toggle("Screen Context", systemImage: "macwindow", isOn: Bindable(state.settings).includeScreen)
             }
             switch context {
             case .main:

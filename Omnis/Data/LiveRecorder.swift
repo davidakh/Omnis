@@ -2,7 +2,7 @@ import Foundation
 
 /// One line of the live transcript, before the session is saved.
 struct LiveLine: Identifiable, Hashable {
-    let id = UUID()
+    var id = UUID()
     let speaker: String
     let text: String
     /// Seconds from the start of the session.
@@ -16,76 +16,79 @@ struct LiveLine: Identifiable, Hashable {
 
 /// The session being recorded right now: its start time, pause state and transcript so far.
 ///
-/// Audio capture and speech-to-text aren't wired up yet, so while recording this replays a
-/// scripted meeting one line at a time. Everything downstream (live transcript, asking about
-/// the session, saving, summarizing, indexing) already works on whatever lines arrive here,
-/// so the real transcriber only has to call `append(speaker:text:)`.
+/// `LiveTranscriber` feeds it: finished sentences through `append(speaker:text:duration:)`,
+/// and words still being spoken through `setPartial(speaker:text:)`. Everything downstream
+/// (live transcript, asking about the session, saving, summarizing, indexing) reads from here.
 @Observable
 final class LiveRecorder {
     private(set) var startedAt: Date?
+    /// Finished lines, in spoken order.
     private(set) var lines: [LiveLine] = []
+    /// What each speaker is saying right now, still being recognized.
+    private(set) var partials: [LiveLine] = []
     private(set) var isPaused = false
+    /// Shown in place of the transcript while there's nothing yet ("Downloading speech model").
+    var status: String?
+    /// A lasting note about the recording ("Recording your mic only…").
+    var notice: String?
 
     var isRecording: Bool { startedAt != nil }
 
-    private var feedTask: Task<Void, Never>?
+    /// Finished lines followed by the ones still in progress: what has been said so far.
+    var transcriptSoFar: [LiveLine] { lines + partials }
 
     func start() {
         startedAt = .now
         lines = []
+        partials = []
         isPaused = false
-        startPlaceholderFeed()
+        status = nil
+        notice = nil
     }
 
     func setPaused(_ paused: Bool) {
         isPaused = paused
     }
 
-    /// Ends recording and hands back what was captured.
+    /// Ends recording and hands back what was captured, including words still in progress.
     func stop() -> (startedAt: Date, lines: [LiveLine])? {
-        feedTask?.cancel()
-        feedTask = nil
         defer {
             startedAt = nil
             lines = []
+            partials = []
             isPaused = false
+            status = nil
+            notice = nil
         }
         guard let startedAt else { return nil }
-        return (startedAt, lines)
+        return (startedAt, (lines + partials).sorted { $0.offset < $1.offset })
     }
 
-    func append(speaker: String, text: String) {
-        guard let startedAt, !isPaused else { return }
-        lines.append(LiveLine(speaker: speaker, text: text, offset: Date.now.timeIntervalSince(startedAt)))
+    /// Adds a finished line. `duration` is how long it took to say, so the line is stamped with
+    /// when it started rather than when recognition finished.
+    func append(speaker: String, text: String, duration: TimeInterval = 0) {
+        guard let startedAt else { return }
+        let offset = max(0, Date.now.timeIntervalSince(startedAt) - duration)
+        let line = LiveLine(speaker: speaker, text: text, offset: offset)
+        // The two audio streams finish lines independently; keep the transcript in spoken order.
+        let index = lines.lastIndex { $0.offset <= offset }.map { $0 + 1 } ?? 0
+        lines.insert(line, at: index)
+        partials.removeAll { $0.speaker == speaker }
     }
 
-    // MARK: - Placeholder transcription
-
-    private func startPlaceholderFeed() {
-        feedTask?.cancel()
-        feedTask = Task { [weak self] in
-            var index = 0
-            while !Task.isCancelled, index < Self.script.count {
-                try? await Task.sleep(for: .seconds(2.5))
-                guard let self, !Task.isCancelled else { return }
-                guard !self.isPaused else { continue }
-                let line = Self.script[index]
-                self.append(speaker: line.speaker, text: line.text)
-                index += 1
-            }
+    /// Updates (or clears, with empty text) what `speaker` is saying right now. The line keeps
+    /// its identity while it grows, so the transcript doesn't flicker.
+    func setPartial(speaker: String, text: String) {
+        guard let startedAt else { return }
+        guard !text.isEmpty else {
+            partials.removeAll { $0.speaker == speaker }
+            return
+        }
+        if let index = partials.firstIndex(where: { $0.speaker == speaker }) {
+            let existing = partials[index]
+            partials[index] = LiveLine(id: existing.id, speaker: speaker, text: text, offset: existing.offset)
+        } else {
+            partials.append(LiveLine(speaker: speaker, text: text, offset: Date.now.timeIntervalSince(startedAt)))
         }
     }
-
-    private static let script: [(speaker: String, text: String)] = [
-        ("Maya", "Okay, let's get started. Thanks for joining, everyone."),
-        ("Maya", "The main thing today is the pricing page redesign."),
-        ("Sam", "The new layout is ready. We're testing two versions of the plan comparison table."),
-        ("Maya", "When will we have results?"),
-        ("Sam", "The experiment needs about two weeks of traffic, so around the 30th."),
-        ("Priya", "Engineering can ship the winning version within a day of the results."),
-        ("Maya", "Great. Let's also make sure the annual discount is clearly shown."),
-        ("Sam", "I'll add it to both versions today."),
-        ("Priya", "I'll set up the dashboard so we can watch conversion daily."),
-        ("Maya", "Perfect. Let's check in again next Wednesday.")
-    ]
 }
