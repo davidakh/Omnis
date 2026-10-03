@@ -6,6 +6,10 @@
 	objectVersion = 110;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		405F9DAE30719A78008979B8 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 405F9DAD30719A78008979B8 /* Sparkle */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
 		405F9D16306FF5E8008979B8 /* Omnis.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Omnis.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -22,6 +26,7 @@
 		405F9D13306FF5E8008979B8 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			files = (
+				405F9DAE30719A78008979B8 /* Sparkle in Frameworks */,
 			);
 		};
 /* End PBXFrameworksBuildPhase section */
@@ -60,6 +65,9 @@
 				405F9D18306FF5E8008979B8 /* Omnis */,
 			);
 			name = Omnis;
+			packageProductDependencies = (
+				405F9DAD30719A78008979B8 /* Sparkle */,
+			);
 			productName = Omnis;
 			productReference = 405F9D16306FF5E8008979B8 /* Omnis.app */;
 			productType = "com.apple.product-type.application";
@@ -88,6 +96,9 @@
 			);
 			mainGroup = 405F9D0D306FF5E8008979B8;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				405F9DAC30719A78008979B8 /* XCRemoteSwiftPackageReference "Sparkle" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 405F9D17306FF5E8008979B8 /* Products */;
 			projectDirPath = "";
@@ -244,7 +255,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = 4V378HMPV8;
+				DEVELOPMENT_TEAM = CXB86Y3UH2;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
@@ -260,7 +271,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = "com.david-akh.Omnis";
+				PRODUCT_BUNDLE_IDENTIFIER = com.david.Omnis;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -280,7 +291,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = 4V378HMPV8;
+				DEVELOPMENT_TEAM = CXB86Y3UH2;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
@@ -296,7 +307,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = "com.david-akh.Omnis";
+				PRODUCT_BUNDLE_IDENTIFIER = com.david.Omnis;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -328,6 +339,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		405F9DAC30719A78008979B8 /* XCRemoteSwiftPackageReference "Sparkle" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/sparkle-project/Sparkle";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.10.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		405F9DAD30719A78008979B8 /* Sparkle */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 405F9DAC30719A78008979B8 /* XCRemoteSwiftPackageReference "Sparkle" */;
+			productName = Sparkle;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 405F9D0E306FF5E8008979B8 /* Project object */;
 	validationLevel = 1;

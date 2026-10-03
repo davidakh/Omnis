@@ -44,3 +44,11 @@ struct EditableTitle: View {
         isEditing = false
     }
 }
+
+extension View {
+    /// A soft, centered shadow behind top-toolbar titles, so they stay legible over the
+    /// content scrolling beneath them.
+    func toolbarTitleShadow() -> some View {
+        shadow(color: .black.opacity(0.6), radius: 6, x: 0, y: 0)
+    }
+}

@@ -21,6 +21,19 @@ final class AnswerThread: Hashable {
         var screenNotice: ScreenCaptureError?
         /// The app (and window) the answer looked at, when it used the screen.
         var screenSource: String?
+        /// Auto answer: instead of one answer, a suggested reply each time the others are
+        /// waiting on the user, until stopped.
+        var isAuto = false
+        var suggestions: [Suggestion] = []
+    }
+
+    /// One suggested reply in auto answer.
+    struct Suggestion: Identifiable {
+        let id: UUID
+        /// What the others said that this answers.
+        let replyingTo: String
+        var text: String
+        var isDone = false
     }
 
     /// Asking during a live session: its transcript is part of the context, and the thread
@@ -34,7 +47,9 @@ final class AnswerThread: Hashable {
 
     @ObservationIgnored private unowned let state: AppState
     @ObservationIgnored private var streamTask: Task<Void, Never>?
-    @ObservationIgnored private var chatID: UUID?
+    /// The saved chat, once the first answer is saved (never for live threads). Observed, so
+    /// Rename and Delete become available when it appears.
+    private(set) var chatID: UUID?
 
     /// Shown in the top bar instead of the first question (a saved chat's title).
     let title: String?
@@ -71,7 +86,22 @@ final class AnswerThread: Hashable {
 
     var isAnswering: Bool { turns.last?.isStreaming ?? false }
 
+    var chat: Session? {
+        chatID.flatMap { id in state.store.chats.first { $0.id == id } }
+    }
+
+    /// The chat's name once renamed; until then the title it reopened with, or its first question.
+    var displayTitle: String {
+        if let chat, chat.hasCustomTitle { return chat.title }
+        return title ?? turns.first?.question ?? ""
+    }
+
     func ask(_ question: String) {
+        // "What should I say next?" during a session: keep answering until stopped.
+        if isLive, AutoAnswerer.isRequest(question) {
+            startAutoAnswer(question)
+            return
+        }
         streamTask?.cancel()
         let history = turns
             .filter { !$0.isStreaming && !$0.failed }
@@ -109,10 +139,53 @@ final class AnswerThread: Hashable {
         }
     }
 
+    /// Auto answer: watches the live transcript and suggests a reply each time the others are
+    /// waiting on the user. Runs until `stop()`.
+    private func startAutoAnswer(_ question: String) {
+        streamTask?.cancel()
+        turns.append(Turn(question: question, status: String(localized: "Listening"), isAuto: true))
+        let index = turns.count - 1
+        let updates = AutoAnswerer(recorder: state.recorder, resolver: state.resolver, index: state.index).updates()
+        streamTask = Task {
+            for await update in updates {
+                switch update {
+                case .listening:
+                    turns[index].status = String(localized: "Listening")
+                case .thinking:
+                    turns[index].status = String(localized: "Thinking")
+                case .note(let message):
+                    turns[index].status = message
+                case .suggestion(let id, let replyingTo, let text):
+                    if let existing = turns[index].suggestions.firstIndex(where: { $0.id == id }) {
+                        turns[index].suggestions[existing].text = text
+                    } else {
+                        withAnimation(SurfaceMotion.content) {
+                            turns[index].suggestions.append(Suggestion(id: id, replyingTo: replyingTo, text: text))
+                        }
+                    }
+                case .finished(let id):
+                    if let done = turns[index].suggestions.firstIndex(where: { $0.id == id }) {
+                        turns[index].suggestions[done].isDone = true
+                    }
+                case .discarded(let id):
+                    withAnimation(SurfaceMotion.content) { turns[index].suggestions.removeAll { $0.id == id } }
+                }
+            }
+            // Ended on its own (no on-device model, or the session ended).
+            if !Task.isCancelled, turns[index].isStreaming { stop() }
+        }
+    }
+
     /// Stops the answer where it is: whatever has streamed so far becomes the whole answer.
+    /// For auto answer, this is how it's turned off.
     func stop() {
         streamTask?.cancel()
         guard let index = turns.indices.last, turns[index].isStreaming else { return }
+        if turns[index].isAuto {
+            // Unfinished suggestions go; the rest become the answer follow-ups can refer to.
+            turns[index].suggestions.removeAll { !$0.isDone }
+            turns[index].answer = turns[index].suggestions.map(\.text).joined(separator: "\n\n")
+        }
         if turns[index].answer.isEmpty {
             turns[index].answer = String(localized: "Stopped.")
             turns[index].failed = true

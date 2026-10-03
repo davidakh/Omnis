@@ -23,7 +23,7 @@ struct MoreMenu<Items: View>: View {
                     items
                     Divider()
                 }
-                Button("Settings…", systemImage: "gearshape") { state.openSettings() }
+                Button("Settings", systemImage: "gearshape") { state.openSettings() }
                 if showsQuit {
                     Button("Quit", systemImage: "power") { state.quit() }
                         .keyboardShortcut("q")

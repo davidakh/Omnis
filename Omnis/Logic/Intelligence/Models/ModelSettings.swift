@@ -51,6 +51,21 @@ final class ModelSettings {
         didSet { defaults.set(openAIModel, forKey: Keys.openAIModel) }
     }
 
+    // Context sources, chosen from the live bar's more menu. All on by default.
+
+    /// Transcribe (and record) the microphone during sessions.
+    var useMicrophone: Bool {
+        didSet { defaults.set(useMicrophone, forKey: Keys.useMicrophone) }
+    }
+    /// Transcribe (and record) the Mac's audio output (call participants, videos).
+    var useSystemAudio: Bool {
+        didSet { defaults.set(useSystemAudio, forKey: Keys.useSystemAudio) }
+    }
+    /// Let answers look at the screen when a question is about it.
+    var useScreen: Bool {
+        didSet { defaults.set(useScreen, forKey: Keys.useScreen) }
+    }
+
     @ObservationIgnored private let defaults: UserDefaults
 
     init(defaults: UserDefaults = .standard) {
@@ -60,6 +75,9 @@ final class ModelSettings {
         provider = saved.flatMap { ModelProvider.selectable.contains($0) ? $0 : nil } ?? .appleOnDevice
         anthropicModel = defaults.string(forKey: Keys.anthropicModel) ?? Self.anthropicModels[0].id
         openAIModel = defaults.string(forKey: Keys.openAIModel) ?? "gpt-5"
+        useMicrophone = defaults.object(forKey: Keys.useMicrophone) as? Bool ?? true
+        useSystemAudio = defaults.object(forKey: Keys.useSystemAudio) as? Bool ?? true
+        useScreen = defaults.object(forKey: Keys.useScreen) as? Bool ?? true
     }
 
     func apiKey(for provider: ModelProvider) -> String? {
@@ -79,6 +97,9 @@ final class ModelSettings {
         static let provider = "model.provider"
         static let anthropicModel = "model.anthropic.id"
         static let openAIModel = "model.openai.id"
+        static let useMicrophone = "context.microphone"
+        static let useSystemAudio = "context.systemAudio"
+        static let useScreen = "context.screen"
     }
 }
 

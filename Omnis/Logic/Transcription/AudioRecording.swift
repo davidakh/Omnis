@@ -4,7 +4,7 @@ import Foundation
 
 /// Where recorded session audio lives: one folder per session inside the app's container,
 /// holding a compressed file per stream and their timing.
-enum AudioStorage {
+nonisolated enum AudioStorage {
     static let microphoneFile = "microphone.m4a"
     static let systemFile = "system.m4a"
     static let timingFile = "timing.json"
@@ -63,13 +63,15 @@ nonisolated final class AudioFileWriter: @unchecked Sendable {
         self.startedAt = startedAt
     }
 
-    func append(_ buffer: AVAudioPCMBuffer, from source: AudioSource) {
+    /// - Parameter silent: write silence instead (the source is turned off), so the file keeps
+    ///   the session's timeline.
+    func append(_ buffer: AVAudioPCMBuffer, from source: AudioSource, silent: Bool = false) {
         queue.async { [self] in
             guard !isFinished, buffer.frameLength > 0 else { return }
             do {
                 let file = try file(for: source, matching: buffer.format)
                 guard let output = convert(buffer, to: file.processingFormat, source: source) else { return }
-                if isPaused { Self.silence(output) }
+                if isPaused || silent { Self.silence(output) }
                 try file.write(from: output)
             } catch {
                 // A buffer that can't be written is dropped; the recording carries on.

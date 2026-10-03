@@ -18,6 +18,11 @@ final class LiveTranscriber {
     private var systemCapture: SystemAudioCapture?
     private var microphoneCapture: MicrophoneCapture?
     private var startTask: Task<Void, Never>?
+    /// Saves the captured audio, when the session keeps a recording.
+    private var writer: AudioFileWriter?
+    /// Which audio sources are turned on (the live bar's context options). Checked for every
+    /// captured buffer, so changes apply mid-session.
+    let sources = AudioSourceSwitch()
 
     init(recorder: LiveRecorder) {
         self.recorder = recorder
@@ -25,19 +30,26 @@ final class LiveTranscriber {
 
     // MARK: - Lifecycle
 
-    func start() {
+    /// - Parameter folder: where to save the session's audio, or nil to keep only the transcript.
+    func start(recordingTo folder: URL?) {
+        writer = folder.map { AudioFileWriter(folder: $0, startedAt: recorder.startedAt ?? .now) }
         startTask = Task { await begin() }
     }
 
     func setPaused(_ paused: Bool) {
         for pipeline in pipelines.values { pipeline.setPaused(paused) }
+        writer?.setPaused(paused)
         if paused {
             recorder.setPartial(speaker: Self.you, text: "")
             recorder.setPartial(speaker: Self.others, text: "")
         }
     }
 
-    /// Stops capturing and waits for the last words to be transcribed.
+    /// The longest the last words may take to transcribe before the session is saved anyway
+    /// (words still in progress are kept as they stand).
+    private static let finishLimit: Duration = .seconds(4)
+
+    /// Stops capturing and waits, briefly, for the last words to be transcribed.
     func stop() async {
         startTask?.cancel()
         await startTask?.value
@@ -47,11 +59,51 @@ final class LiveTranscriber {
         microphoneCapture?.stop()
         systemCapture = nil
         microphoneCapture = nil
+        finishWriting()
 
-        for pipeline in pipelines.values { await pipeline.finish() }
-        for task in resultTasks { await task.value }
-        pipelines = [:]
-        resultTasks = []
+        let pipelines = Array(self.pipelines.values)
+        let resultTasks = self.resultTasks
+        self.pipelines = [:]
+        self.resultTasks = []
+        let finishing = Task {
+            for pipeline in pipelines { await pipeline.finish() }
+            for task in resultTasks { await task.value }
+        }
+        if await !Self.wait(for: finishing, upTo: Self.finishLimit) {
+            for pipeline in pipelines { await pipeline.cancel() }
+            for task in resultTasks { task.cancel() }
+        }
+    }
+
+    /// Turns a source on or off; turning one off clears what it was in the middle of saying.
+    func setSource(_ source: AudioSource, on: Bool) {
+        sources.set(source, on: on)
+        if !on { recorder.setPartial(speaker: source == .microphone ? Self.you : Self.others, text: "") }
+    }
+
+    /// Closes the audio files right away (on quit, there's no time to wait for transcription).
+    func finishWriting() {
+        writer?.finish()
+        writer = nil
+    }
+
+    /// Whether `task` finished within `limit`. Doesn't wait past the limit (a task group would,
+    /// since it waits for every child).
+    private static func wait(for task: Task<Void, Never>, upTo limit: Duration) async -> Bool {
+        let (signals, signal) = AsyncStream.makeStream(of: Bool.self)
+        Task {
+            await task.value
+            signal.yield(true)
+        }
+        Task {
+            try? await Task.sleep(for: limit)
+            signal.yield(false)
+        }
+        for await finished in signals {
+            signal.finish()
+            return finished
+        }
+        return false
     }
 
     // MARK: - Starting
@@ -96,6 +148,8 @@ final class LiveTranscriber {
 
             try await startCapture(screenAllowed: screenAllowed, microphoneAllowed: microphoneAllowed)
             recorder.status = nil
+            // Only with call audio captured separately are "You" and "Others" told apart.
+            recorder.separatesSpeakers = systemCapture != nil && pipelines[.system] != nil
             if !screenAllowed || pipelines[.system] == nil {
                 recorder.notice = String(localized: "Recording your mic only. Allow Screen Recording to include call audio.")
             } else if !microphoneAllowed {
@@ -108,8 +162,14 @@ final class LiveTranscriber {
 
     private func startCapture(screenAllowed: Bool, microphoneAllowed: Bool) async throws {
         let pipelines = self.pipelines
+        let writer = self.writer
+        let sources = self.sources
+        // Each buffer goes to its stream's transcriber and, when recording, to its audio file.
+        // A source that's turned off isn't transcribed, and records as silence.
         let deliver: @Sendable (AVAudioPCMBuffer, AudioSource) -> Void = { buffer, source in
-            pipelines[source]?.append(buffer)
+            let isOn = sources.isOn(source)
+            if isOn { pipelines[source]?.append(buffer) }
+            writer?.append(buffer, from: source, silent: !isOn)
         }
 
         if screenAllowed, pipelines[.system] != nil {
@@ -180,5 +240,19 @@ final class LiveTranscriber {
 
     private static func words(_ text: String) -> Set<String> {
         Set(text.lowercased().split { !$0.isLetter && !$0.isNumber }.map(String.init))
+    }
+}
+
+/// Thread-safe on/off state for each audio source, read from capture threads.
+nonisolated final class AudioSourceSwitch: @unchecked Sendable {
+    private let lock = NSLock()
+    private var off: Set<AudioSource> = []
+
+    func isOn(_ source: AudioSource) -> Bool {
+        lock.withLock { !off.contains(source) }
+    }
+
+    func set(_ source: AudioSource, on: Bool) {
+        lock.withLock { if on { off.remove(source) } else { off.insert(source) } }
     }
 }

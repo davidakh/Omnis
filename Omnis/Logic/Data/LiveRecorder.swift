@@ -31,6 +31,9 @@ final class LiveRecorder {
     var status: String?
     /// A lasting note about the recording ("Recording your mic only…").
     var notice: String?
+    /// True when call audio is captured on its own stream, so "Others" lines really are other
+    /// people. Mic-only, everything heard (speakers included) is labeled "You".
+    var separatesSpeakers = false
 
     var isRecording: Bool { startedAt != nil }
 
@@ -44,6 +47,7 @@ final class LiveRecorder {
         isPaused = false
         status = nil
         notice = nil
+        separatesSpeakers = false
     }
 
     func setPaused(_ paused: Bool) {
@@ -74,7 +78,11 @@ final class LiveRecorder {
         let index = lines.lastIndex { $0.offset <= offset }.map { $0 + 1 } ?? 0
         lines.insert(line, at: index)
         partials.removeAll { $0.speaker == speaker }
+        onLinesChanged?(lines)
     }
+
+    /// Called whenever a finished line is added (used to write summary notes as it records).
+    @ObservationIgnored var onLinesChanged: (([LiveLine]) -> Void)?
 
     /// Updates (or clears, with empty text) what `speaker` is saying right now. The line keeps
     /// its identity while it grows, so the transcript doesn't flicker.

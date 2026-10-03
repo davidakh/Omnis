@@ -29,12 +29,12 @@ final class SessionPlayer {
         unload()
         sessionID = session.id
         guard let folder = session.audioFolder,
-              let item = await Self.playerItem(folder: folder),
+              let (item, length) = await Self.playerItem(folder: folder),
               sessionID == session.id else { return }
 
         let player = AVPlayer(playerItem: item)
         self.player = player
-        duration = item.asset.duration.seconds.isFinite ? item.asset.duration.seconds : 0
+        duration = length
         isAvailable = duration > 0
 
         timeObserver = player.addPeriodicTimeObserver(
@@ -103,7 +103,7 @@ final class SessionPlayer {
 
     /// Both streams placed on the session's timeline: each file starts at the moment it began
     /// recording, relative to the session's start.
-    private static func playerItem(folder: String) async -> AVPlayerItem? {
+    private static func playerItem(folder: String) async -> (item: AVPlayerItem, duration: TimeInterval)? {
         let directory = AudioStorage.url(for: folder)
         let timing = AudioStorage.timing(in: folder)
         let composition = AVMutableComposition()
@@ -121,6 +121,8 @@ final class SessionPlayer {
             let at = CMTime(seconds: start ?? 0, preferredTimescale: 600)
             if (try? destination.insertTimeRange(range, of: track, at: at)) != nil { hasAudio = true }
         }
-        return hasAudio ? AVPlayerItem(asset: composition) : nil
+        let duration = composition.duration.seconds
+        guard hasAudio, duration.isFinite, duration > 0 else { return nil }
+        return (AVPlayerItem(asset: composition), duration)
     }
 }

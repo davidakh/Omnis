@@ -72,13 +72,14 @@ final class SessionStore {
 
     /// Saves a finished live session.
     @discardableResult
-    func createSession(startedAt: Date, lines: [LiveLine]) -> Session {
+    func createSession(startedAt: Date, lines: [LiveLine], audioFolder: String? = nil) -> Session {
         let session = Session(
             title: String(localized: "New Session"),
             kind: .session,
             createdAt: startedAt,
             endedAt: .now
         )
+        session.audioFolder = audioFolder
         context.insert(session)
         for (order, line) in lines.enumerated() {
             let record = TranscriptLine(order: order, speaker: line.speaker, text: line.text, offset: line.offset)
@@ -127,7 +128,10 @@ final class SessionStore {
 
     func delete(_ ids: Set<UUID>) {
         for id in ids {
-            if let session = session(withID: id) { context.delete(session) }
+            guard let session = session(withID: id) else { continue }
+            // The recording goes with it.
+            if let folder = session.audioFolder { AudioStorage.delete(folder) }
+            context.delete(session)
         }
         save()
     }

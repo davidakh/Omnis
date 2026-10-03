@@ -150,5 +150,6 @@ private struct SessionsTitle: View {
         Text("Sessions")
             .font(.system(size: 15, weight: .semibold))
             .foregroundStyle(.white)
+            .toolbarTitleShadow()
     }
 }

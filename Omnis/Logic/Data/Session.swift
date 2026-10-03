@@ -18,6 +18,10 @@ final class Session {
     var isProcessed: Bool
     /// Set once the user renames the session, so generated titles never overwrite theirs.
     var hasCustomTitle: Bool
+    /// The folder (inside `AudioStorage.directory`) holding the session's recorded audio.
+    var audioFolder: String? = nil
+    /// Generated sections, JSON-encoded; read and write through `sections`.
+    var sectionsData: Data? = nil
 
     @Relationship(deleteRule: .cascade, inverse: \TranscriptLine.session)
     var lines: [TranscriptLine] = []
@@ -46,6 +50,12 @@ final class Session {
 
     var kind: Kind { Kind(rawValue: kindRaw) ?? .session }
 
+    /// Points of interest: where the conversation moves to a new topic, in order.
+    var sections: [SessionSection] {
+        get { sectionsData.flatMap { try? JSONDecoder().decode([SessionSection].self, from: $0) } ?? [] }
+        set { sectionsData = newValue.isEmpty ? nil : try? JSONEncoder().encode(newValue) }
+    }
+
     var orderedLines: [TranscriptLine] { lines.sorted { $0.order < $1.order } }
 
     /// The transcript as plain text, one "Speaker: text" line each.
@@ -64,6 +74,26 @@ final class Session {
             return createdAt.formatted(.dateTime.weekday(.abbreviated))
         }
         return createdAt.formatted(.dateTime.month(.abbreviated).day())
+    }
+}
+
+/// A titled part of a session, from where the conversation turns to it.
+struct SessionSection: Codable, Hashable, Identifiable {
+    var title: String
+    /// Seconds from the start of the session.
+    var start: TimeInterval
+
+    var id: TimeInterval { start }
+
+    /// "4:20" style, or "1:04:20" past an hour.
+    var timestamp: String { Self.format(start) }
+
+    static func format(_ seconds: TimeInterval) -> String {
+        let total = max(0, Int(seconds))
+        let hours = total / 3600, minutes = total % 3600 / 60, secs = total % 60
+        return hours > 0
+            ? String(format: "%d:%02d:%02d", hours, minutes, secs)
+            : String(format: "%d:%02d", minutes, secs)
     }
 }
 

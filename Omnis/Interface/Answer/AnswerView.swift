@@ -11,6 +11,7 @@ struct AnswerView: View {
     let onBack: () -> Void
 
     @Environment(SurfaceState.self) private var surface: SurfaceState?
+    @State private var isRenaming = false
     @State private var thinkingOrb = OrbAnimation(epoch: .now, epochPhase: 0)
     @FocusState private var fieldFocused: Bool
 
@@ -47,15 +48,15 @@ struct AnswerView: View {
 
     private var topBar: some View {
         ZStack {
-            Text(title ?? turns.first?.question ?? "")
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(.white)
-                .lineLimit(1)
-                .padding(.horizontal, 44)  // clear of the buttons
+            EditableTitle(title: title ?? thread.displayTitle, isEditing: $isRenaming) { name in
+                if let id = thread.chatID { state.rename(id, to: name) }
+            }
+            .toolbarTitleShadow()
+            .padding(.horizontal, 44)  // clear of the buttons
             HStack {
                 SurfaceButton("chevron.left") { onBack() }
                 Spacer()
-                MoreMenu(state: state)
+                ChatMoreMenu(state: state, thread: thread, isRenaming: $isRenaming, onLeave: onBack)
             }
         }
     }
@@ -122,20 +123,25 @@ struct AnswerView: View {
             .onAppear {
                 if turns.count > 1, let last = turns.last { proxy.scrollTo(last.id, anchor: .top) }
             }
+            // Auto answer grows in place: follow each new suggestion.
+            .onChange(of: turns.last?.suggestions.count) {
+                guard turns.last?.isAuto == true else { return }
+                withAnimation(.smooth(duration: 0.45)) { proxy.scrollTo(Self.autoAnswerEnd, anchor: .bottom) }
+            }
             .onChange(of: turns.count) {
                 guard let last = turns.last else { return }
                 withAnimation(.smooth(duration: 0.45)) { proxy.scrollTo(last.id, anchor: .top) }
             }
         }
         .mask {
+            // The same soft fade as `FadingScroll`: from the edges to just past the toolbars.
             let h = Self.size.height
             LinearGradient(
                 stops: [
                     .init(color: .clear, location: 0),
-                    .init(color: .clear, location: 40 / h),
-                    .init(color: .black, location: 64 / h),
-                    .init(color: .black, location: (h - 76) / h),
-                    .init(color: .clear, location: (h - 16) / h)
+                    .init(color: .black, location: (Self.topClear + 8) / h),
+                    .init(color: .black, location: (h - Self.bottomClear - 12) / h),
+                    .init(color: .clear, location: 1)
                 ],
                 startPoint: .top, endPoint: .bottom
             )
@@ -154,14 +160,22 @@ struct AnswerView: View {
                 .frame(maxWidth: .infinity, alignment: .trailing)
                 .padding(.leading, 40)
 
-            if turn.answer.isEmpty && turn.isStreaming {
+            // The screen is only read when the question calls for it; say when it was.
+            if turn.screenSource != nil, turn.screenNotice == nil {
+                Text("Viewed Screen")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.white.opacity(0.45))
+                    .transition(.blurReplace)
+            }
+
+            if turn.isAuto {
+                autoAnswer(turn)
+            } else if turn.answer.isEmpty && turn.isStreaming {
                 ShimmerText(turn.status)
                     .font(Self.font)
-                    .contentTransition(.opacity)
-                    .animation(.smooth(duration: 0.2), value: turn.status)
-                    .transition(.opacity)
+                    .transition(.blurReplace)
             } else {
-                Text(Self.formatted(turn.answer))
+                StreamingText(Self.formatted(turn.answer), revealsInitialText: turn.isStreaming)
                     .font(Self.font)
                     .environment(\.lineHeight, Self.lineHeight)
                     .foregroundStyle(.white.opacity(turn.failed ? 0.6 : 1))
@@ -173,14 +187,6 @@ struct AnswerView: View {
             if let notice = turn.screenNotice {
                 ScreenNotice(reason: notice)
                     .transition(.opacity)
-            } else if let source = turn.screenSource {
-                // The screen is only read when the question calls for it; say when it was.
-                Label(String(localized: "Looked at \(source)"), systemImage: "macwindow")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.white.opacity(0.45))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .transition(.opacity)
             }
 
             // Only under the latest answer, once it has finished.
@@ -190,6 +196,48 @@ struct AnswerView: View {
             }
         }
     }
+
+    /// Auto answer: each suggested reply under a quote of what it answers, newest brightest,
+    /// and "Listening" while waiting for the next thing to answer.
+    private func autoAnswer(_ turn: AnswerThread.Turn) -> some View {
+        VStack(alignment: .leading, spacing: 16) {
+            ForEach(turn.suggestions) { suggestion in
+                let isLatest = suggestion.id == turn.suggestions.last?.id
+                VStack(alignment: .leading, spacing: 4) {
+                    if !suggestion.replyingTo.isEmpty {
+                        Text("“\(suggestion.replyingTo)”")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.white.opacity(0.45))
+                            .lineLimit(2)
+                    }
+                    StreamingText(suggestion.text, revealsInitialText: !suggestion.isDone)
+                        .font(Self.font)
+                        .environment(\.lineHeight, Self.lineHeight)
+                        .foregroundStyle(.white.opacity(isLatest ? 1 : 0.5))
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .transition(.blurReplace)
+                .animation(SurfaceMotion.content, value: isLatest)
+            }
+            if turn.isStreaming {
+                ShimmerText(turn.status)
+                    .font(Self.font)
+                    .transition(.blurReplace)
+            } else if turn.suggestions.isEmpty {
+                Text(turn.answer)
+                    .font(Self.font)
+                    .foregroundStyle(.white.opacity(0.6))
+            }
+            Color.clear.frame(height: 1).id(Self.autoAnswerEnd)
+        }
+        .animation(SurfaceMotion.content, value: turn.suggestions.map(\.id))
+        .animation(SurfaceMotion.content, value: turn.isStreaming)
+    }
+
+    /// Scroll target that keeps the newest suggestion in view.
+    private static let autoAnswerEnd = "auto-answer-end"
 
     private static func formatted(_ answer: String) -> AttributedString {
         let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
@@ -217,25 +265,28 @@ struct AnswerCompactBar: View {
     let thread: AnswerThread
     let onBack: () -> Void
 
+    @State private var isRenaming = false
+
     var body: some View {
         HStack(spacing: 8) {
             SurfaceButton("chevron.left") { onBack() }
             Group {
                 if let turn = thread.turns.last, turn.isStreaming, turn.answer.isEmpty {
                     ShimmerText(turn.status)
+                        .font(.system(size: 15, weight: .semibold))
+                        .lineLimit(1)
                 } else {
-                    Text(thread.title ?? thread.turns.first?.question ?? "")
-                        .foregroundStyle(.white)
+                    EditableTitle(title: thread.displayTitle, isEditing: $isRenaming) { name in
+                        if let id = thread.chatID { state.rename(id, to: name) }
+                    }
                 }
             }
-            .font(.system(size: 15, weight: .semibold))
-            .lineLimit(1)
             .frame(maxWidth: .infinity)
             if thread.isAnswering {
                 SurfaceButton("stop.fill", style: .prominent) { thread.stop() }
                     .transition(.blurReplace)
             } else {
-                MoreMenu(state: state)
+                ChatMoreMenu(state: state, thread: thread, isRenaming: $isRenaming, onLeave: onBack)
                     .transition(.blurReplace)
             }
         }
@@ -243,6 +294,33 @@ struct AnswerCompactBar: View {
         .padding(.horizontal, 18)
         .padding(.vertical, 20)
         .frame(width: 256, height: 72)
+    }
+}
+
+/// The chat's more menu: Rename and Delete above Settings. They're available once the chat has
+/// been saved; live-session threads are never saved, so they get the plain menu.
+private struct ChatMoreMenu: View {
+    let state: AppState
+    let thread: AnswerThread
+    @Binding var isRenaming: Bool
+    /// Leaves the chat, as its back button does; Delete leaves before deleting.
+    let onLeave: () -> Void
+
+    var body: some View {
+        if thread.isLive {
+            MoreMenu(state: state)
+        } else {
+            MoreMenu(state: state) {
+                Button("Rename", systemImage: "pencil") { isRenaming = true }
+                    .disabled(thread.chatID == nil)
+                Button("Delete", systemImage: "trash", role: .destructive) {
+                    guard let id = thread.chatID else { return }
+                    onLeave()
+                    state.delete([id])
+                }
+                .disabled(thread.chatID == nil)
+            }
+        }
     }
 }
 

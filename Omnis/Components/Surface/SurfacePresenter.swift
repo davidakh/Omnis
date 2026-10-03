@@ -26,7 +26,9 @@ final class SurfacePresenter: NSObject {
         panel.isFloatingPanel = true
         panel.becomesKeyOnlyIfNeeded = false
         panel.level = .statusBar
-        panel.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
+        // Belongs to one Space at a time and is moved to each newly active one (see
+        // `activeSpaceChanged`). Joining all Spaces would draw it on both desktops mid-swipe.
+        panel.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary, .ignoresCycle]
         panel.appearance = NSAppearance(named: .darkAqua)
         panel.backgroundColor = .clear
         panel.isOpaque = false
@@ -53,6 +55,12 @@ final class SurfacePresenter: NSObject {
             name: NSApplication.didChangeScreenParametersNotification,
             object: nil
         )
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(activeSpaceChanged),
+            name: NSWorkspace.activeSpaceDidChangeNotification,
+            object: nil
+        )
         installMouseMonitors()
     }
 
@@ -77,6 +85,24 @@ final class SurfacePresenter: NSObject {
 
     @objc private func screenParametersChanged() {
         position()
+    }
+
+    /// Follows the user to the new desktop: the panel stays behind on the old one as it slides
+    /// away, then is brought over and materializes on the new one, so it's only ever shown once.
+    @objc private func activeSpaceChanged() {
+        let wasPresented = state.isPresented
+        var instantly = Transaction()
+        instantly.disablesAnimations = true
+        withTransaction(instantly) { state.isPresented = false }
+        position()  // the new desktop may be on another display
+        panel.orderFrontRegardless()
+        guard wasPresented else { return }
+        panel.contentView?.layoutSubtreeIfNeeded()
+        // Next pass, so the hidden state renders first and the materialize animation plays.
+        DispatchQueue.main.async { [weak self] in
+            self?.state.isPresented = true
+            self?.updateMousePassthrough()
+        }
     }
 
     /// Centers the panel horizontally with the glass `dockGap` above the Dock.

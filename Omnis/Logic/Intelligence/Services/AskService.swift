@@ -67,7 +67,8 @@ final class AskService {
         previous: AskTurn?,
         into continuation: AsyncThrowingStream<AskEvent, Error>.Continuation
     ) async -> (snapshot: ScreenSnapshot?, note: String?) {
-        guard await ScreenRelevance(index: builder.index).needsScreen(question, previous: previous) else { return (nil, nil) }
+        guard settings.useScreen,
+              await ScreenRelevance(index: builder.index).needsScreen(question, previous: previous) else { return (nil, nil) }
         continuation.yield(.status(String(localized: "Looking at the screen")))
         do {
             let snapshot = try await ScreenContextProvider.capture()
