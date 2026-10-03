@@ -28,7 +28,7 @@ struct RootView: View {
                 AnswerView(state: state, question: question) { state.closeAnswer() }
             case .liveAsk: AskBar(state: state, context: .liveSession)
             case .liveAnswer(let question):
-                AnswerView(state: state, question: question, answers: AnswerView.liveAnswers) { state.mode = .live }
+                AnswerView(state: state, question: question, isLive: true) { state.mode = .live }
             case .settings: SettingsScreen(state: state)
             }
         }

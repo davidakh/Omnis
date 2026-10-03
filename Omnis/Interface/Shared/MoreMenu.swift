@@ -2,14 +2,17 @@ import SwiftUI
 
 // MARK: - More menu
 
-/// The ellipsis menu used everywhere. For now it holds only Settings…; screen-specific items
-/// can be passed in later (`MoreMenu(state:) { … }`), and appear above a divider.
+/// The ellipsis menu used everywhere. It always holds Settings…; screen-specific items can be
+/// passed in (`MoreMenu(state:) { … }`) and appear above a divider, and `showsQuit` adds
+/// Quit Omnis at the bottom.
 struct MoreMenu<Items: View>: View {
     let state: AppState
     let items: Items?
+    var showsQuit = false
 
-    init(state: AppState, @ViewBuilder items: () -> Items) {
+    init(state: AppState, showsQuit: Bool = false, @ViewBuilder items: () -> Items) {
         self.state = state
+        self.showsQuit = showsQuit
         self.items = items()
     }
 
@@ -20,13 +23,18 @@ struct MoreMenu<Items: View>: View {
                 Divider()
             }
             Button("Settings…", systemImage: "gearshape") { state.openSettings() }
+            if showsQuit {
+                Button("Quit", systemImage: "power") { state.quit() }
+                    .keyboardShortcut("q")
+            }
         }
     }
 }
 
 extension MoreMenu where Items == EmptyView {
-    init(state: AppState) {
+    init(state: AppState, showsQuit: Bool = false) {
         self.state = state
+        self.showsQuit = showsQuit
         self.items = nil
     }
 }

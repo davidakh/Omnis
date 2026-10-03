@@ -1,0 +1,118 @@
+import Foundation
+import SwiftData
+
+/// Owns the SwiftData container and keeps the sessions and chats lists the UI shows.
+/// Every mutation goes through here, saves, and refreshes the lists.
+@Observable
+final class SessionStore {
+    let container: ModelContainer
+    var context: ModelContext { container.mainContext }
+
+    /// Newest first.
+    private(set) var sessions: [Session] = []
+    private(set) var chats: [Session] = []
+
+    init(inMemory: Bool = false) {
+        let schema = Schema([Session.self, TranscriptLine.self, IndexChunk.self])
+        let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: inMemory)
+        do {
+            container = try ModelContainer(for: schema, configurations: configuration)
+        } catch {
+            fatalError("Couldn't open the session store: \(error)")
+        }
+        #if DEBUG
+        MockData.seedIfEmpty(context)
+        #endif
+        reload()
+    }
+
+    func reload() {
+        sessions = fetch(.session)
+        chats = fetch(.chat)
+    }
+
+    private func fetch(_ kind: Session.Kind) -> [Session] {
+        let raw = kind.rawValue
+        let descriptor = FetchDescriptor<Session>(
+            predicate: #Predicate { $0.kindRaw == raw },
+            sortBy: [SortDescriptor(\.createdAt, order: .reverse)]
+        )
+        return (try? context.fetch(descriptor)) ?? []
+    }
+
+    func session(withID id: UUID) -> Session? {
+        let descriptor = FetchDescriptor<Session>(predicate: #Predicate { $0.id == id })
+        return try? context.fetch(descriptor).first
+    }
+
+    /// All sessions (not chats) still waiting for a summary or index.
+    func unprocessedSessions() -> [Session] {
+        sessions.filter { !$0.isProcessed && !$0.lines.isEmpty }
+    }
+
+    // MARK: - Mutations
+
+    /// Saves a finished live session.
+    @discardableResult
+    func createSession(startedAt: Date, lines: [LiveLine]) -> Session {
+        let session = Session(
+            title: String(localized: "New Session"),
+            kind: .session,
+            createdAt: startedAt,
+            endedAt: .now
+        )
+        context.insert(session)
+        for (order, line) in lines.enumerated() {
+            let record = TranscriptLine(order: order, speaker: line.speaker, text: line.text, offset: line.offset)
+            record.session = session
+            context.insert(record)
+        }
+        save()
+        return session
+    }
+
+    /// Adds one question / answer turn to a chat, creating the chat on its first turn.
+    /// Returns the chat's id so follow-ups land in the same chat.
+    @discardableResult
+    func recordChatTurn(chatID: UUID?, question: String, answer: String) -> UUID {
+        let chat: Session
+        if let chatID, let existing = session(withID: chatID) {
+            chat = existing
+        } else {
+            chat = Session(title: question, kind: .chat, isProcessed: true)
+            context.insert(chat)
+        }
+        let offset = Date.now.timeIntervalSince(chat.createdAt)
+        let next = chat.lines.count
+        for (index, (speaker, text)) in [("You", question), ("Omnis", answer)].enumerated() {
+            let line = TranscriptLine(order: next + index, speaker: speaker, text: text, offset: offset)
+            line.session = chat
+            context.insert(line)
+        }
+        save()
+        return chat.id
+    }
+
+    func rename(_ id: UUID, to title: String) {
+        guard let session = session(withID: id) else { return }
+        session.title = title
+        session.hasCustomTitle = true
+        save()
+    }
+
+    func delete(_ ids: Set<UUID>) {
+        for id in ids {
+            if let session = session(withID: id) { context.delete(session) }
+        }
+        save()
+    }
+
+    func save() {
+        do {
+            try context.save()
+        } catch {
+            assertionFailure("Couldn't save the session store: \(error)")
+        }
+        reload()
+    }
+}

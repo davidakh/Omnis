@@ -33,7 +33,10 @@ struct AskBar: View {
                 .lineLimit(1...10)
                 .focused($fieldFocused)
                 .onSubmit(send)
-            MoreMenu(state: state)
+            MoreMenu(state: state, showsQuit: true) {
+                // Captures the window under the surface along with the question.
+                Toggle("Include Screen", systemImage: "macwindow", isOn: Bindable(state.settings).includeScreen)
+            }
             switch context {
             case .main:
                 SurfaceButton("list.bullet") { state.showSessions() }

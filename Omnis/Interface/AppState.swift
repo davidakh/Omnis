@@ -1,6 +1,7 @@
 import SwiftUI
 
-/// Drives which screen the surface shows, plus the mock data behind them.
+/// Drives which screen the surface shows, and owns the data and intelligence services behind
+/// them.
 @Observable
 final class AppState {
     enum Mode: Hashable {
@@ -19,16 +20,37 @@ final class AppState {
     var sessionsTab: SessionsTab = .sessions
     var detailTab: DetailTab = .summary
 
-    /// Sessions list: the two tabs' items, select mode and its selection, and the row
-    /// being renamed.
-    var sessions = Session.mockSessions
-    var chats = Session.mockChats
+    // MARK: Services
+
+    let store: SessionStore
+    let settings: ModelSettings
+    let recorder = LiveRecorder()
+    let resolver: ModelResolver
+    let index: SessionIndex
+    let ask: AskService
+    let processor: SessionProcessor
+
+    init(store: SessionStore = SessionStore(), settings: ModelSettings = ModelSettings()) {
+        self.store = store
+        self.settings = settings
+        resolver = ModelResolver(settings: settings)
+        index = SessionIndex(store: store)
+        ask = AskService(resolver: resolver, builder: ContextBuilder(index: index), settings: settings)
+        processor = SessionProcessor(store: store, index: index, resolver: resolver)
+
+        // Finish anything left from a previous launch (and index seeded sessions).
+        Task { [processor] in await processor.processPending() }
+    }
+
+    // MARK: Sessions list
+
+    /// Select mode and its selection, and the row being renamed.
     var isSelecting = false
     var selection: Set<UUID> = []
     var renamingID: UUID?
 
     func items(for tab: SessionsTab) -> [Session] {
-        tab == .sessions ? sessions : chats
+        tab == .sessions ? store.sessions : store.chats
     }
 
     func toggleSelecting() {
@@ -48,8 +70,8 @@ final class AppState {
     }
 
     func delete(_ ids: Set<UUID>) {
-        sessions.removeAll { ids.contains($0.id) }
-        chats.removeAll { ids.contains($0.id) }
+        store.delete(ids)
+        index.invalidate()
         selection.subtract(ids)
     }
 
@@ -63,12 +85,14 @@ final class AppState {
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
         defer { renamingID = nil }
         guard !trimmed.isEmpty else { return }
-        if let index = sessions.firstIndex(where: { $0.id == id }) { sessions[index].title = trimmed }
-        if let index = chats.firstIndex(where: { $0.id == id }) { chats[index].title = trimmed }
+        store.rename(id, to: trimmed)
+        index.invalidate()
     }
 
-    /// Live session. The orb lives here (not in a view) so it stays continuous while the
-    /// surface swaps between the compact and expanded live layouts.
+    // MARK: Live session
+
+    /// The orb lives here (not in a view) so it stays continuous while the surface swaps
+    /// between the compact and expanded live layouts.
     var isPaused = false
     var orb = OrbAnimation(epoch: .now, epochPhase: 0)
 
@@ -76,6 +100,7 @@ final class AppState {
     /// the height of the screen the play button was on.
     func startSession(compact: Bool) {
         isPaused = false
+        recorder.start()
         setOrbShape(.square)
         mode = compact ? .liveCompact : .live
     }
@@ -83,13 +108,23 @@ final class AppState {
     /// Paused shows the small lit circle; recording shows the square.
     func togglePause() {
         isPaused.toggle()
+        recorder.setPaused(isPaused)
         setOrbShape(isPaused ? .circle : .square)
     }
 
+    /// Saves the session, then titles, summarizes and indexes it in the background.
     func endSession() {
         isPaused = false
         setOrbShape(.dots)
         mode = .compact
+        guard let recording = recorder.stop(), !recording.lines.isEmpty else { return }
+        let session = store.createSession(startedAt: recording.startedAt, lines: recording.lines)
+        Task { [processor] in await processor.process(session) }
+    }
+
+    /// The live transcript to answer from, while a session is recording.
+    var liveContext: (startedAt: Date, lines: [LiveLine])? {
+        recorder.startedAt.map { ($0, recorder.lines) }
     }
 
     /// Morphs the orb to `shape` (the shader crossfades over `OrbAnimation.morphDuration`).
@@ -99,6 +134,8 @@ final class AppState {
         orb.shape = shape
         orb.shapeStart = .now
     }
+
+    // MARK: Navigation
 
     func showSessions() {
         isSelecting = false
@@ -110,6 +147,13 @@ final class AppState {
     func openSession(_ session: Session) {
         detailTab = .summary
         mode = .session(session)
+    }
+
+    /// Quits the app. A session that's still recording is saved first; its summary and index
+    /// are finished on the next launch.
+    func quit() {
+        if recorder.isRecording { endSession() }
+        NSApplication.shared.terminate(nil)
     }
 
     func openSettings() {

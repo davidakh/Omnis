@@ -1,0 +1,123 @@
+import Foundation
+import SwiftData
+
+/// A recorded session, or a saved chat. Both keep their content as ordered transcript
+/// lines: a session's are what was said, a chat's are its "You" / "Omnis" turns.
+@Model
+final class Session {
+    enum Kind: String, Codable { case session, chat }
+
+    @Attribute(.unique) var id: UUID
+    var title: String
+    /// Stored as a raw string so fetches can filter on it.
+    var kindRaw: String
+    var createdAt: Date
+    var endedAt: Date?
+    var summary: String?
+    /// False until the title and summary have been generated and the session indexed.
+    var isProcessed: Bool
+    /// Set once the user renames the session, so generated titles never overwrite theirs.
+    var hasCustomTitle: Bool
+
+    @Relationship(deleteRule: .cascade, inverse: \TranscriptLine.session)
+    var lines: [TranscriptLine] = []
+
+    @Relationship(deleteRule: .cascade, inverse: \IndexChunk.session)
+    var chunks: [IndexChunk] = []
+
+    init(
+        id: UUID = UUID(),
+        title: String,
+        kind: Kind,
+        createdAt: Date = .now,
+        endedAt: Date? = nil,
+        summary: String? = nil,
+        isProcessed: Bool = false
+    ) {
+        self.id = id
+        self.title = title
+        self.kindRaw = kind.rawValue
+        self.createdAt = createdAt
+        self.endedAt = endedAt
+        self.summary = summary
+        self.isProcessed = isProcessed
+        self.hasCustomTitle = false
+    }
+
+    var kind: Kind { Kind(rawValue: kindRaw) ?? .session }
+
+    var orderedLines: [TranscriptLine] { lines.sorted { $0.order < $1.order } }
+
+    /// The transcript as plain text, one "Speaker: text" line each.
+    var transcriptText: String {
+        orderedLines.map { "\($0.speaker): \($0.text)" }.joined(separator: "\n")
+    }
+
+    /// Short list label: the time today, "Yesterday", a weekday this week, else a date.
+    var time: String {
+        let calendar = Calendar.current
+        if calendar.isDateInToday(createdAt) {
+            return createdAt.formatted(date: .omitted, time: .shortened)
+        }
+        if calendar.isDateInYesterday(createdAt) { return String(localized: "Yesterday") }
+        if let days = calendar.dateComponents([.day], from: createdAt, to: .now).day, days < 7 {
+            return createdAt.formatted(.dateTime.weekday(.abbreviated))
+        }
+        return createdAt.formatted(.dateTime.month(.abbreviated).day())
+    }
+}
+
+/// One line of a transcript.
+@Model
+final class TranscriptLine {
+    var order: Int
+    var speaker: String
+    var text: String
+    /// Seconds from the start of the session.
+    var offset: TimeInterval
+    var session: Session?
+
+    init(order: Int, speaker: String, text: String, offset: TimeInterval) {
+        self.order = order
+        self.speaker = speaker
+        self.text = text
+        self.offset = offset
+    }
+
+    /// "1:41" style timestamp.
+    var timestamp: String {
+        let seconds = Int(offset)
+        return String(format: "%d:%02d", seconds / 60, seconds % 60)
+    }
+}
+
+/// A searchable slice of a session (part of its summary or transcript) with its embedding.
+/// Built and queried by `SessionIndex`.
+@Model
+final class IndexChunk {
+    enum Source: String, Codable { case summary, transcript }
+
+    var sourceRaw: String
+    var text: String
+    /// Offset of the first transcript line in the chunk; nil for summary chunks.
+    var startOffset: TimeInterval?
+    /// Language of the embedding; vectors are only comparable within one language.
+    var language: String
+    /// The normalized embedding, as packed `Float`s.
+    var vectorData: Data
+    var session: Session?
+
+    init(source: Source, text: String, startOffset: TimeInterval?, language: String, vector: [Float]) {
+        self.sourceRaw = source.rawValue
+        self.text = text
+        self.startOffset = startOffset
+        self.language = language
+        self.vectorData = vector.withUnsafeBufferPointer { Data(buffer: $0) }
+    }
+
+    var source: Source { Source(rawValue: sourceRaw) ?? .transcript }
+
+    var vector: [Float] {
+        vectorData.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
+    }
+}

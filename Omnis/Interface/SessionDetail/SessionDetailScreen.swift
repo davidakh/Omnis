@@ -73,9 +73,9 @@ struct SessionCompactBar: View {
     }
 }
 
-// MARK: - Session detail (mock data)
+// MARK: - Session detail
 
-/// Mock summary or transcript for one session.
+/// The session's generated summary, or its transcript.
 private struct SessionDetailContent: View {
     let session: Session
     let tab: AppState.DetailTab
@@ -90,29 +90,44 @@ private struct SessionDetailContent: View {
         .id(tab)  // each tab starts at the top
     }
 
+    @ViewBuilder
     private var summary: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            ForEach(Self.summaryParagraphs(for: session), id: \.self) { paragraph in
-                Text(paragraph)
-                    .font(.system(size: 13))
-                    .foregroundStyle(.white.opacity(0.85))
-                    .lineSpacing(3)
-                    .fixedSize(horizontal: false, vertical: true)
+        if let summary = session.summary {
+            VStack(alignment: .leading, spacing: 14) {
+                ForEach(Self.paragraphs(of: summary), id: \.self) { paragraph in
+                    Text(paragraph)
+                        .font(.system(size: 13))
+                        .foregroundStyle(.white.opacity(0.85))
+                        .lineSpacing(3)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+            // Summaries are written in the background once a session ends.
+            ShimmerText(String(localized: "Writing the summary"))
+                .font(.system(size: 13))
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var transcript: some View {
         LazyVStack(alignment: .leading, spacing: 12) {
-            ForEach(Array(Self.transcriptLines.enumerated()), id: \.offset) { _, line in
+            ForEach(session.orderedLines) { line in
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(line.speaker)
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.55))
+                    HStack(spacing: 6) {
+                        Text(line.speaker)
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(.white.opacity(0.55))
+                        Text(line.timestamp)
+                            .font(.system(size: 11))
+                            .foregroundStyle(.white.opacity(0.35))
+                    }
                     Text(line.text)
                         .font(.system(size: 13))
                         .foregroundStyle(.white.opacity(0.85))
+                        .textSelection(.enabled)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -120,24 +135,9 @@ private struct SessionDetailContent: View {
         }
     }
 
-    private static func summaryParagraphs(for session: Session) -> [String] {
-        [
-            "\(session.title) covered the main goals, the open questions, and a short list of next steps.",
-            "The first half focused on what's already done and what's blocked. Most items are on track, with two waiting on input from others.",
-            "The second half turned to priorities for the coming week. The top three were agreed, and lower-priority items were moved to a backlog for later review.",
-            "Next steps: follow up on the two blocked items, confirm the timeline, and check back at the end of the week."
-        ]
+    private static func paragraphs(of summary: String) -> [String] {
+        summary.components(separatedBy: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
     }
-
-    private static let transcriptLines: [(speaker: String, text: String)] = [
-        ("You", "Let's go through where things stand."),
-        ("Omnis", "Sure. Most items are on track. Two are waiting on input from others."),
-        ("You", "Which two?"),
-        ("Omnis", "The budget sign-off and the design review. Both were due yesterday."),
-        ("You", "Okay, I'll chase those today. What should we prioritise this week?"),
-        ("Omnis", "Based on deadlines: finish the draft, confirm the timeline, and prep for Thursday."),
-        ("You", "Sounds right. Move everything else to the backlog."),
-        ("Omnis", "Done. I'll remind you on Friday to review the backlog."),
-        ("You", "Perfect, thanks.")
-    ]
 }

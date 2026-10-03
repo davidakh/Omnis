@@ -1,16 +1,21 @@
 import SwiftUI
 
-// MARK: - Answer (mock)
-
 /// One question and its answer in a conversation.
 private struct Turn: Identifiable {
     let id = UUID()
     let question: String
-    var answer: String
-    var revealed = 0          // words of `answer` shown so far
-    var thinking = true
+    /// The answer so far; grows as it streams.
+    var answer = ""
+    /// What's happening before the first words arrive ("Searching your sessions"…).
+    var status = String(localized: "Thinking")
+    var isStreaming = true
+    var failed = false
+    /// Set when the screen should have been included but couldn't be captured.
+    var screenNotice: ScreenCaptureError?
 }
 
+/// A question thread: each answer streams in from `AskService`, and follow-ups carry the
+/// earlier turns as context. Threads from the main ask are saved as chats.
 struct AnswerView: View {
     @Bindable var state: AppState
     /// The first question, or nil to open empty and wait for one.
@@ -18,14 +23,17 @@ struct AnswerView: View {
     /// Shown in the top bar; defaults to the first question.
     var title: String? = nil
     /// The field's placeholder before anything has been asked.
-    var emptyPlaceholder = "Ask anything"
-    var answers: [String] = AnswerView.mockAnswers
+    var emptyPlaceholder = String(localized: "Ask anything")
+    /// Asking during a live session: its transcript is part of the context, and the thread
+    /// isn't saved as a chat.
+    var isLive = false
     let onBack: () -> Void
 
     @Environment(SurfaceState.self) private var surface: SurfaceState?
     @State private var turns: [Turn] = []
     @State private var followUp = ""
     @State private var streamTask: Task<Void, Never>?
+    @State private var chatID: UUID?
     @State private var thinkingOrb = OrbAnimation(epoch: .now, epochPhase: 0)
     @FocusState private var fieldFocused: Bool
 
@@ -35,7 +43,7 @@ struct AnswerView: View {
     private static var font: Font { .system(size: 15) }
     private static var lineHeight: AttributedString.LineHeight { .exact(points: 16) }
 
-    private var isAnswering: Bool { turns.last.map { $0.thinking || $0.revealed < words(of: $0).count } ?? false }
+    private var isAnswering: Bool { turns.last?.isStreaming ?? false }
 
     var body: some View {
         ZStack {
@@ -93,7 +101,7 @@ struct AnswerView: View {
                     .transition(.blurReplace)
             } else {
                 // Fills the bar and grows upward with its text, from a capsule into a rounded rect.
-                TextField(turns.isEmpty ? emptyPlaceholder : "Ask Followup Question", text: $followUp, axis: .vertical)
+                TextField(turns.isEmpty ? emptyPlaceholder : String(localized: "Ask Followup Question"), text: $followUp, axis: .vertical)
                     .textFieldStyle(.plain)
                     .font(.body)
                     .foregroundStyle(.white)
@@ -167,58 +175,93 @@ struct AnswerView: View {
                 .frame(maxWidth: .infinity, alignment: .trailing)
                 .padding(.leading, 40)
 
-            if turn.thinking {
-                ShimmerText("Looking at the Transcript")
+            if turn.answer.isEmpty && turn.isStreaming {
+                ShimmerText(turn.status)
                     .font(Self.font)
+                    .contentTransition(.opacity)
+                    .animation(.smooth(duration: 0.2), value: turn.status)
                     .transition(.opacity)
             } else {
-                Text(words(of: turn).prefix(turn.revealed).joined(separator: " "))
+                Text(Self.formatted(turn.answer))
                     .font(Self.font)
                     .environment(\.lineHeight, Self.lineHeight)
-                    .foregroundStyle(.white)
+                    .foregroundStyle(.white.opacity(turn.failed ? 0.6 : 1))
+                    .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
+
+            if let notice = turn.screenNotice {
+                ScreenNotice(reason: notice)
+                    .transition(.opacity)
+            }
         }
     }
 
-    // MARK: Streaming
-
-    private func words(of turn: Turn) -> [String] {
-        turn.answer.split(separator: " ").map(String.init)
+    /// Models answer in light markdown; render the inline parts (bold, italics, code) and keep
+    /// line breaks. Falls back to the plain text while a partial answer doesn't parse.
+    private static func formatted(_ answer: String) -> AttributedString {
+        let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+        return (try? AttributedString(markdown: answer, options: options)) ?? AttributedString(answer)
     }
+
+    // MARK: Asking
 
     private func ask(_ question: String) {
         streamTask?.cancel()
-        turns.append(Turn(question: question, answer: answers[turns.count % answers.count]))
+        let history = turns
+            .filter { !$0.isStreaming && !$0.failed }
+            .map { AskTurn(question: $0.question, answer: $0.answer) }
+        turns.append(Turn(question: question))
         let index = turns.count - 1
+
+        let stream = state.ask.answer(question, history: history, live: isLive ? state.liveContext : nil)
         streamTask = Task {
-            try? await Task.sleep(for: .seconds(1.6))
-            guard !Task.isCancelled else { return }
-            withAnimation(SurfaceMotion.content) { turns[index].thinking = false }
-            let count = words(of: turns[index]).count
-            for revealed in 1...count {
-                try? await Task.sleep(for: .milliseconds(28))
-                guard !Task.isCancelled else { return }
-                turns[index].revealed = revealed
+            do {
+                for try await event in stream {
+                    switch event {
+                    case .status(let status):
+                        turns[index].status = status
+                    case .screenUnavailable(let reason):
+                        turns[index].screenNotice = reason
+                    case .text(let text):
+                        if turns[index].answer.isEmpty {
+                            withAnimation(SurfaceMotion.content) { turns[index].answer = text }
+                        } else {
+                            turns[index].answer = text
+                        }
+                    }
+                }
+                finish(index)
+            } catch is CancellationError {
+                // `stop()` already settled the turn.
+            } catch {
+                turns[index].answer = AskService.message(for: error)
+                turns[index].failed = true
+                finish(index)
             }
-            surface?.makeKey?()
-            fieldFocused = true
         }
+    }
+
+    private func finish(_ index: Int) {
+        withAnimation(SurfaceMotion.content) { turns[index].isStreaming = false }
+        let turn = turns[index]
+        if !isLive, !turn.failed, !turn.answer.isEmpty {
+            chatID = state.store.recordChatTurn(chatID: chatID, question: turn.question, answer: turn.answer)
+        }
+        surface?.makeKey?()
+        fieldFocused = true
     }
 
     /// Stops the answer where it is: whatever has streamed so far becomes the whole answer.
     private func stop() {
         streamTask?.cancel()
-        guard let index = turns.indices.last else { return }
-        let shown = words(of: turns[index]).prefix(turns[index].revealed).joined(separator: " ")
-        withAnimation(SurfaceMotion.content) {
-            turns[index].answer = shown.isEmpty ? "Stopped." : shown
-            turns[index].revealed = words(of: turns[index]).count
-            turns[index].thinking = false
+        guard let index = turns.indices.last, turns[index].isStreaming else { return }
+        if turns[index].answer.isEmpty {
+            turns[index].answer = String(localized: "Stopped.")
+            turns[index].failed = true
         }
-        surface?.makeKey?()
-        fieldFocused = true
+        finish(index)
     }
 
     private func sendFollowUp() {
@@ -227,55 +270,27 @@ struct AnswerView: View {
         followUp = ""
         ask(text)
     }
-
-    static let mockAnswers = [
-        """
-        You and Roy met on the 1st of October 2026 over Google Meet.
-
-        Roy walked through the open positions on his team, for a designer and for a Swift engineer. \
-        You suggested combining the two into a design-to-code role, working with Dimitri on design \
-        and with the development team on the front end.
-
-        Roy liked the idea and said he'd check with the hiring manager whether the role could be \
-        scoped that way.
-        """,
-        """
-        Yes. Near the end, Roy said he'd like to set up a follow-up interview with the hiring \
-        manager once the role is scoped.
-
-        He mentioned aiming for the week of the 12th, and said he'd send a few time slots by email.
-        """,
-        """
-        Based on the transcript, the next steps are:
-
-        • Roy confirms the combined role with the hiring manager.
-        • He sends time slots for the follow-up interview.
-        • You share two or three portfolio pieces that show both design and code.
-        """
-    ]
 }
 
-extension AnswerView {
-    /// Mock answers about the live session (the launch meeting in the live transcript).
-    static let liveAnswers = [
-        """
-        So far, the team is planning the launch of the new onboarding flow.
+/// Why the screen wasn't part of an answer, with a shortcut to grant Screen Recording.
+private struct ScreenNotice: View {
+    let reason: ScreenCaptureError
 
-        Design is nearly done and waiting on welcome-screen copy, expected Thursday. Engineering \
-        can start on the locked screens now.
-        """,
-        """
-        The current plan is to ship on the 21st, with the 18th as a stretch goal.
+    @Environment(\.openURL) private var openURL
 
-        Sam asked for extra time for the accessibility review, which is why the date moved back \
-        from the 18th.
-        """,
-        """
-        Action items so far:
-
-        • Sam: deliver the welcome-screen copy by Thursday.
-        • Priya: update the tracker with the new dates.
-        • Maya: brief the support team before launch.
-        """
-    ]
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label(reason.localizedDescription, systemImage: "macwindow.badge.plus")
+                .font(.system(size: 11))
+                .foregroundStyle(.white.opacity(0.55))
+                .fixedSize(horizontal: false, vertical: true)
+            if case .permissionNeeded = reason {
+                Button("Open Privacy Settings") { openURL(ScreenCaptureError.settingsURL) }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.white)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
 }
