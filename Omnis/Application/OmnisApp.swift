@@ -22,8 +22,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var presenter: SurfacePresenter?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        let demo = DemoState()
-        let presenter = SurfacePresenter { SurfaceDemo(state: demo) }
+        let state = AppState()
+        let presenter = SurfacePresenter { RootView(state: state) }
         self.presenter = presenter
         presenter.show()
     }

@@ -1,137 +1,18 @@
 import SwiftUI
 
-// Temporary content that proves the surface host morphs between a capsule and a rounded rectangle.
-
-@Observable
-final class DemoState {
-    enum Mode { case compact, expanded, sessions, sessionsCompact }
-    enum SessionsTab { case sessions, conversations }
-
-    var mode: Mode = .compact
-    var text = ""
-    var sessionsTab: SessionsTab = .sessions
-    /// Where the sessions list's back button returns to.
-    private var modeBeforeSessions: Mode = .compact
-
-    private var isInSessions: Bool { mode == .sessions || mode == .sessionsCompact }
-
-    func showSessions() {
-        if !isInSessions { modeBeforeSessions = mode }
-        mode = .sessions
-    }
-
-    func closeSessions() {
-        mode = modeBeforeSessions
-    }
-}
-
-struct SurfaceDemo: View {
-    let state: DemoState
-
-    var body: some View {
-        SurfaceHost(
-            id: state.mode,
-            onCollapse: collapseAction,
-            onExpand: expandAction,
-            showsGrabber: state.mode != .compact
-        ) {
-            switch state.mode {
-            case .compact: compact
-            case .expanded: DemoAskBar(state: state)
-            case .sessions: sessions
-            case .sessionsCompact: sessionsCompact
-            }
-        }
-    }
-
-    private var collapseAction: (() -> Void)? {
-        switch state.mode {
-        case .compact: nil
-        case .expanded: { state.mode = .compact }
-        case .sessions: { state.mode = .sessionsCompact }
-        case .sessionsCompact: { state.closeSessions() }
-        }
-    }
-
-    private var expandAction: (() -> Void)? {
-        switch state.mode {
-        case .compact: { state.mode = .expanded }
-        case .sessionsCompact: { state.mode = .sessions }
-        case .expanded, .sessions: nil
-        }
-    }
-
-    private var compact: some View {
-        HStack(spacing: 4) {
-            SurfaceButton("square.and.pencil") { state.mode = .expanded }
-            SurfaceButton("list.bullet") { state.showSessions() }
-            SurfaceButton("play.fill", style: .prominent) {}
-        }
-        .padding(.vertical, 8)
-        .padding(.horizontal, 6)
-    }
-
-    private var sessions: some View {
-        VStack(spacing: 0) {
-            // Top toolbar: back, centered title, more.
-            ZStack {
-                sessionsTitle
-                HStack {
-                    SurfaceButton("chevron.left") { state.closeSessions() }
-                    Spacer()
-                    SurfaceButton("ellipsis") {}
-                }
-            }
-
-            Spacer(minLength: 0)
-
-            // Bottom toolbar: select, tabs, filter.
-            HStack(spacing: 0) {
-                SurfaceButton("checklist") {}
-                Spacer(minLength: 0)
-                SurfaceTabBar(
-                    tabs: [
-                        .init(value: .sessions, title: "Sessions", symbol: "calendar"),
-                        .init(value: .conversations, title: "Chats", symbol: "bubble.left.and.bubble.right")
-                    ],
-                    selection: Bindable(state).sessionsTab
-                )
-                .zIndex(1)  // the lifted pill floats above the neighbouring buttons
-                Spacer(minLength: 0)
-                SurfaceButton("line.3.horizontal.decrease") {}
-            }
-            // The 52 pt tab bar overflows the 32 pt toolbar row, centered on it.
-            .frame(height: 32)
-        }
-        .padding(20)
-        .frame(width: 320, height: 380)
-    }
-
-    /// 72 pt capsule: back, title, filter.
-    private var sessionsCompact: some View {
-        HStack(spacing: 0) {
-            SurfaceButton("chevron.left") { state.closeSessions() }
-            Spacer(minLength: 0)
-            sessionsTitle
-            Spacer(minLength: 0)
-            SurfaceButton("line.3.horizontal.decrease") {}
-        }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 20)
-        .frame(width: 256, height: 72)
-    }
-
-    private var sessionsTitle: some View {
-        Text("Sessions")
-            .font(.system(size: 15, weight: .semibold))
-            .foregroundStyle(.white)
-    }
-}
-
 /// A text field with buttons. While the text fits on one line it's a 72 pt capsule row;
 /// once it wraps, the field moves above the buttons.
-private struct DemoAskBar: View {
-    @Bindable var state: DemoState
+struct AskBar: View {
+    /// The main ask, or asking about the live session (which swaps in the transcript button,
+    /// and shows compose selected while empty: tapping it returns to the session).
+    enum Context { case main, liveSession }
+
+    @Bindable var state: AppState
+    var context: Context = .main
+
+    private var placeholder: String {
+        context == .main ? "Ask anything" : "Ask About This Session"
+    }
 
     @Environment(SurfaceState.self) private var surface: SurfaceState?
     @FocusState private var fieldFocused: Bool
@@ -144,7 +25,7 @@ private struct DemoAskBar: View {
 
     var body: some View {
         AskBarLayout(isMultiline: isMultiline) {
-            TextField("Ask anything", text: $state.text, axis: .vertical)
+            TextField(placeholder, text: $state.text, axis: .vertical)
                 .textFieldStyle(.plain)
                 .font(Self.fieldFont)
                 .environment(\.lineHeight, Self.fieldLineHeight)
@@ -152,9 +33,19 @@ private struct DemoAskBar: View {
                 .lineLimit(1...10)
                 .focused($fieldFocused)
                 .onSubmit(send)
-            SurfaceButton("ellipsis") {}
-            SurfaceButton("list.bullet") { state.showSessions() }
-            SurfaceButton(isEmpty ? "play.fill" : "arrow.up", style: .prominent, action: send)
+            MoreMenu(state: state)
+            switch context {
+            case .main:
+                SurfaceButton("list.bullet") { state.showSessions() }
+                SurfaceButton(isEmpty ? "play.fill" : "arrow.up", style: .prominent) {
+                    if isEmpty { state.startSession(compact: false) } else { send() }
+                }
+            case .liveSession:
+                SurfaceButton("quote.bubble") { state.mode = .liveTranscript }
+                SurfaceButton(isEmpty ? "square.and.pencil" : "arrow.up", style: .prominent) {
+                    if isEmpty { state.mode = .live } else { send() }
+                }
+            }
         }
         .padding(isMultiline ? 20 : 18)
         .background(alignment: .topLeading) { lineProbe }
@@ -193,8 +84,9 @@ private struct DemoAskBar: View {
 
     private func send() {
         guard !isEmpty else { return }
+        let question = state.text.trimmingCharacters(in: .whitespacesAndNewlines)
         state.text = ""
-        state.mode = .compact
+        state.mode = context == .main ? .answer(question) : .liveAnswer(question)
     }
 }
 

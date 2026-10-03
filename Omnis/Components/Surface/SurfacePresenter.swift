@@ -8,6 +8,10 @@ final class SurfacePresenter: NSObject {
     private let panel: SurfacePanel
     private var mouseMonitors: [Any] = []
     private var isScrolling = false
+    /// Whether the current (or last) scroll gesture belongs to scrollable content.
+    private var routesToContent = false
+    private var pullPastTop: CGFloat = 0
+    private var pullCommitted = false
     private var wheelIdleTask: Task<Void, Never>?
 
     init<Content: View>(@ViewBuilder content: () -> Content) {
@@ -104,8 +108,8 @@ final class SurfacePresenter: NSObject {
         }
         if let scroll = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel, handler: { [weak self] event in
             guard let self, event.window === self.panel else { return event }
-            self.handleScroll(event)
-            return nil
+            // Pass the event on to scrollable content; swallow it if it drove the surface gesture.
+            return self.handleScroll(event) ? nil : event
         }) {
             mouseMonitors.append(scroll)
         }
@@ -135,29 +139,42 @@ final class SurfacePresenter: NSObject {
 
     // MARK: - Scroll gestures
 
-    /// Translates AppKit scroll events into finger-direction began / changed / ended events.
-    /// Trackpads report phases; plain mouse wheels don't, so their gestures end after an idle gap.
-    private func handleScroll(_ event: NSEvent) {
-        // Momentum after the fingers lift isn't part of the gesture.
-        guard event.momentumPhase.isEmpty else { return }
+    /// Routes a scroll event and returns whether it was consumed by the surface gesture.
+    ///
+    /// Each gesture is routed once, when it starts: if the content has a scroll view, the whole
+    /// gesture (momentum included) goes to it; otherwise it becomes finger-direction
+    /// began / changed / ended events for collapse / expand. Trackpads report phases; plain
+    /// mouse wheels don't, so their gestures end after an idle gap.
+    private func handleScroll(_ event: NSEvent) -> Bool {
+        let phase = event.phase
 
-        let scale = event.hasPreciseScrollingDeltas ? 1 : SurfaceGesture.wheelLineScale
-        let sign: CGFloat = event.isDirectionInvertedFromDevice ? 1 : -1
-        let delta = CGSize(
-            width: event.scrollingDeltaX * scale * sign,
-            height: event.scrollingDeltaY * scale * sign
-        )
+        // Momentum belongs to whichever side owned the gesture.
+        if !event.momentumPhase.isEmpty { return !routesToContent }
+        if phase.contains(.mayBegin) { return state.scrollableOwner == nil }
 
-        if event.phase.contains(.began) {
+        let isWheel = phase.isEmpty
+        let moves = isWheel || phase.contains(.changed)
+        if phase.contains(.began) || (moves && !isScrolling) {
             beginScroll()
-        } else if event.phase.contains(.changed) {
-            if !isScrolling { beginScroll() }
-            state.onScroll?(SurfaceScrollEvent(phase: .changed, delta: delta))
-        } else if event.phase.contains(.ended) || event.phase.contains(.cancelled) {
-            endScroll()
-        } else if event.phase.isEmpty {
-            if !isScrolling { beginScroll() }
-            state.onScroll?(SurfaceScrollEvent(phase: .changed, delta: delta))
+        }
+
+        if moves {
+            let scale = event.hasPreciseScrollingDeltas ? 1 : SurfaceGesture.wheelLineScale
+            let sign: CGFloat = event.isDirectionInvertedFromDevice ? 1 : -1
+            let delta = CGSize(
+                width: event.scrollingDeltaX * scale * sign,
+                height: event.scrollingDeltaY * scale * sign
+            )
+            if routesToContent {
+                // The content scrolls vertically; side pulls still reach the surface.
+                trackPullPastTop(delta.height)
+                state.onScroll?(SurfaceScrollEvent(phase: .changed, delta: delta, horizontalOnly: true))
+            } else {
+                state.onScroll?(SurfaceScrollEvent(phase: .changed, delta: delta))
+            }
+        }
+
+        if isWheel {
             wheelIdleTask?.cancel()
             wheelIdleTask = Task { [weak self] in
                 try? await Task.sleep(for: .seconds(SurfaceGesture.wheelIdle))
@@ -165,10 +182,35 @@ final class SurfacePresenter: NSObject {
                 self?.endScroll()
             }
         }
+
+        let consumed = !routesToContent
+        if phase.contains(.ended) || phase.contains(.cancelled) {
+            endScroll()
+        }
+        return consumed
+    }
+
+    /// While the content is at its top, finger travel downward (beyond it) accumulates; once it
+    /// passes `pullPastTopDistance` the surface collapses, at most once per gesture.
+    /// The content's own elastic overscroll is too damped to measure this reliably.
+    private func trackPullPastTop(_ fingerDown: CGFloat) {
+        guard !pullCommitted else { return }
+        if state.contentAtTop {
+            pullPastTop = max(pullPastTop + fingerDown, 0)
+        } else {
+            pullPastTop = 0
+        }
+        if pullPastTop >= SurfaceGesture.pullPastTopDistance {
+            pullCommitted = true
+            state.onPullPastTop?()
+        }
     }
 
     private func beginScroll() {
         isScrolling = true
+        routesToContent = state.scrollableOwner != nil
+        pullPastTop = 0
+        pullCommitted = false
         state.onScroll?(SurfaceScrollEvent(phase: .began))
     }
 

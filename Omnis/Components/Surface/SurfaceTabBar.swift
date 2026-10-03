@@ -71,7 +71,7 @@ struct SurfaceTabBar<Value: Hashable>: View {
     private var pill: some View {
         let size = dropSize
         return ZStack {
-            Capsule().fill(.black.opacity(isLifted ? 0 : 0.6))
+            Capsule().fill(.black.opacity(isLifted ? 0 : 0.4))
             GlassSurface(radius: size.height / 2, style: .lens)
                 .opacity(isLifted ? 1 : 0)
         }

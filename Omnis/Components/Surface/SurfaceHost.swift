@@ -16,6 +16,49 @@ final class SurfaceState {
 
     /// Receives scroll gestures over the glass, forwarded by the presenter.
     @ObservationIgnored var onScroll: ((SurfaceScrollEvent) -> Void)?
+
+    /// Set while the current content has a scroll view (see `surfaceScrollable()`). Gestures that
+    /// start then go to the scroll view instead of driving collapse / expand.
+    @ObservationIgnored var scrollableOwner: UUID?
+    /// Whether the scrollable content is scrolled to its top.
+    @ObservationIgnored var contentAtTop = true
+    /// Called once the fingers have pulled far enough past the top of the scrollable content.
+    @ObservationIgnored var onPullPastTop: (() -> Void)?
+}
+
+extension View {
+    /// Marks a scroll view as the surface's scrollable content: it receives scroll gestures, and
+    /// pulling down past its top (fingers still on the trackpad) collapses the surface.
+    /// Pass `startsAtTop: false` for content that opens scrolled elsewhere (e.g. a transcript
+    /// anchored at the bottom); the scroll position is only reported once it changes.
+    func surfaceScrollable(startsAtTop: Bool = true) -> some View {
+        modifier(SurfaceScrollableModifier(startsAtTop: startsAtTop))
+    }
+}
+
+private struct SurfaceScrollableModifier: ViewModifier {
+    let startsAtTop: Bool
+    @Environment(SurfaceState.self) private var surface: SurfaceState?
+    @State private var token = UUID()
+
+    func body(content: Content) -> some View {
+        content
+            // Always elastic, so even a short list can be pulled past its top.
+            .scrollBounceBehavior(.always, axes: .vertical)
+            .onScrollGeometryChange(for: Bool.self) { geometry in
+                geometry.contentOffset.y + geometry.contentInsets.top <= 0.5
+            } action: { _, atTop in
+                surface?.contentAtTop = atTop
+            }
+            .onAppear {
+                surface?.scrollableOwner = token
+                surface?.contentAtTop = startsAtTop
+            }
+            .onDisappear {
+                // Only clear our own claim; incoming content may already have registered.
+                if surface?.scrollableOwner == token { surface?.scrollableOwner = nil }
+            }
+    }
 }
 
 /// A scroll gesture over the glass. `delta` is in points and follows the fingers
@@ -25,17 +68,21 @@ struct SurfaceScrollEvent {
 
     var phase: Phase
     var delta: CGSize = .zero
+    /// The vertical part belongs to scrollable content; only horizontal pulls apply to the surface.
+    var horizontalOnly = false
 }
 
 /// Morphing glass container. Measures its content and springs the glass to fit it:
 /// a capsule while short, a rounded rectangle once taller.
 ///
 /// Scrolling over the glass makes it follow the scroll vector; scrolling far enough down
-/// calls `onCollapse`, far enough up calls `onExpand`, and the glass bows back into place.
+/// calls `onCollapse`, far enough up calls `onExpand`, pulling far enough to the right calls
+/// `onBack`, and the glass bows back into place.
 struct SurfaceHost<Content: View>: View {
     let id: AnyHashable
     var onCollapse: (() -> Void)?
     var onExpand: (() -> Void)?
+    var onBack: (() -> Void)?
     var showsGrabber: Bool
     @ViewBuilder let content: () -> Content
 
@@ -53,17 +100,20 @@ struct SurfaceHost<Content: View>: View {
     @State private var scrollTravel: CGSize = .zero
     @State private var scrollOffset: CGSize = .zero
     @State private var scrollCommitted = false
+    @State private var idleReleaseTask: Task<Void, Never>?
 
     init(
         id: AnyHashable,
         onCollapse: (() -> Void)? = nil,
         onExpand: (() -> Void)? = nil,
+        onBack: (() -> Void)? = nil,
         showsGrabber: Bool = false,
         @ViewBuilder content: @escaping () -> Content
     ) {
         self.id = id
         self.onCollapse = onCollapse
         self.onExpand = onExpand
+        self.onBack = onBack
         self.showsGrabber = showsGrabber
         self.content = content
     }
@@ -78,31 +128,34 @@ struct SurfaceHost<Content: View>: View {
 
     var body: some View {
         SpillWidth(width: surfaceWidth, height: surfaceHeight) {
-            ZStack {
-                ZStack {
-                    content()
-                        .fixedSize()
-                        .onGeometryChange(for: CGSize.self) { $0.size } action: { [id] in measured($0, for: id) }
-                        .id(id)
-                        .transition(SurfaceSwapTransition())
-                }
-                .animation(SurfaceMotion.content, value: id)
-
-                // Fills the glass frame so the grabber is pinned to the glass's top edge
-                // (not the content's), riding the morph and sharing the content's blur.
-                ZStack {
-                    if showsGrabber {
-                        Capsule()
-                            .fill(.white.opacity(0.3))
-                            .frame(width: SurfaceMetrics.grabberSize.width, height: SurfaceMetrics.grabberSize.height)
-                            .padding(.top, SurfaceMetrics.grabberInset)
+            // A box exactly the glass's size. The content hangs centred over it and the
+            // grabber is pinned to its top, so neither follows the content's own (animating)
+            // size; both share the blur pulse below.
+            Color.clear
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .overlay {
+                    ZStack {
+                        content()
+                            .fixedSize()
+                            .onGeometryChange(for: CGSize.self) { $0.size } action: { [id] in measured($0, for: id) }
+                            .id(id)
                             .transition(SurfaceSwapTransition())
                     }
+                    .animation(SurfaceMotion.content, value: id)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-                .animation(SurfaceMotion.content, value: showsGrabber)
-                .allowsHitTesting(false)
-            }
+                .overlay(alignment: .top) {
+                    ZStack {
+                        if showsGrabber {
+                            Capsule()
+                                .fill(.white.opacity(0.3))
+                                .frame(width: SurfaceMetrics.grabberSize.width, height: SurfaceMetrics.grabberSize.height)
+                                .padding(.top, SurfaceMetrics.grabberInset)
+                                .transition(SurfaceSwapTransition())
+                        }
+                    }
+                    .animation(SurfaceMotion.content, value: showsGrabber)
+                    .allowsHitTesting(false)
+                }
             // Timed blur pulse that restarts with every morph, independent of the springs,
             // so settling or overshoot can never bring the blur back.
             .keyframeAnimator(initialValue: CGFloat(0), trigger: morphCount) { view, blur in
@@ -129,6 +182,7 @@ struct SurfaceHost<Content: View>: View {
         .onChange(of: id, initial: true) {
             currentID = id
             surface?.onScroll = { handleScroll($0) }
+            surface?.onPullPastTop = { onCollapse?() }
             // Content revived mid-transition may not report a new size, so fall back to its
             // last known one. Deferred so a fresh measurement from this update lands first.
             Task {
@@ -155,24 +209,48 @@ struct SurfaceHost<Content: View>: View {
             scrollCommitted = false
         case .changed:
             guard !scrollCommitted else { return }
-            scrollTravel.width += event.delta.width
-            scrollTravel.height += event.delta.height
-            scrollOffset = CGSize(
-                width: rubberBand(scrollTravel.width, limit: SurfaceGesture.followLimit),
-                height: rubberBand(
-                    scrollTravel.height,
-                    limit: verticalAction(for: scrollTravel.height) == nil
-                        ? SurfaceGesture.blockedFollowLimit
-                        : SurfaceGesture.followLimit
-                )
+            // Cap single-event jumps (e.g. coarse mouse-wheel ticks) so the glass never lurches.
+            let cap = SurfaceGesture.maxEventDelta
+            scrollTravel.width += min(max(event.delta.width, -cap), cap)
+            scrollTravel.height += min(max(event.delta.height, -cap), cap)
+            scheduleIdleRelease()
+
+            // Over scrollable content the glass only follows clearly sideways pulls,
+            // so ordinary vertical scrolling doesn't nudge it.
+            let sideways = abs(scrollTravel.width) > abs(scrollTravel.height)
+            let followsX = !event.horizontalOnly || sideways
+            let target = CGSize(
+                width: followsX
+                    ? rubberBand(
+                        scrollTravel.width,
+                        limit: sideAction(for: scrollTravel.width) == nil && onBack != nil
+                            ? SurfaceGesture.blockedFollowLimit
+                            : SurfaceGesture.followLimit
+                    )
+                    : 0,
+                height: event.horizontalOnly
+                    ? 0
+                    : rubberBand(
+                        scrollTravel.height,
+                        limit: verticalAction(for: scrollTravel.height) == nil
+                            ? SurfaceGesture.blockedFollowLimit
+                            : SurfaceGesture.followLimit
+                    )
             )
-            if abs(scrollTravel.height) >= SurfaceGesture.commitDistance,
+            // Ease toward the fingers on a damped spring, which smooths uneven event timing.
+            withAnimation(SurfaceMotion.follow) { scrollOffset = target }
+
+            if !event.horizontalOnly,
+               abs(scrollTravel.height) >= SurfaceGesture.commitDistance,
                let action = verticalAction(for: scrollTravel.height) {
-                scrollCommitted = true
-                action()
-                withAnimation(SurfaceMotion.bow) { scrollOffset = .zero }
+                commit(action)
+            } else if scrollTravel.width >= SurfaceGesture.sideCommitDistance,
+                      scrollTravel.width > abs(scrollTravel.height) * SurfaceGesture.sideDominance,
+                      let action = sideAction(for: scrollTravel.width) {
+                commit(action)
             }
         case .ended:
+            idleReleaseTask?.cancel()
             if !scrollCommitted {
                 withAnimation(SurfaceMotion.release) { scrollOffset = .zero }
             }
@@ -181,15 +259,39 @@ struct SurfaceHost<Content: View>: View {
         }
     }
 
+    /// If scroll events stop arriving without an end (fingers resting, or a lost `ended`),
+    /// level the glass back out instead of leaving it displaced.
+    private func scheduleIdleRelease() {
+        idleReleaseTask?.cancel()
+        idleReleaseTask = Task {
+            try? await Task.sleep(for: .seconds(SurfaceGesture.idleRelease))
+            guard !Task.isCancelled, !scrollCommitted else { return }
+            scrollTravel = .zero
+            withAnimation(SurfaceMotion.release) { scrollOffset = .zero }
+        }
+    }
+
+    private func commit(_ action: () -> Void) {
+        scrollCommitted = true
+        idleReleaseTask?.cancel()
+        action()
+        withAnimation(SurfaceMotion.bow) { scrollOffset = .zero }
+    }
+
     /// Scrolling down collapses, scrolling up expands.
     private func verticalAction(for travel: CGFloat) -> (() -> Void)? {
         travel > 0 ? onCollapse : (travel < 0 ? onExpand : nil)
     }
 
-    /// Follows `travel` closely at first, then resists, approaching `limit` asymptotically.
+    /// Pulling to the right goes back.
+    private func sideAction(for travel: CGFloat) -> (() -> Void)? {
+        travel > 0 ? onBack : nil
+    }
+
+    /// Follows `travel` gently at first, then levels out smoothly toward `limit` (tanh),
+    /// so the glass never moves far and never stops abruptly.
     private func rubberBand(_ travel: CGFloat, limit: CGFloat) -> CGFloat {
-        let resisted = limit * (1 - 1 / (abs(travel) / limit * SurfaceGesture.followStiffness + 1))
-        return travel < 0 ? -resisted : resisted
+        limit * tanh(travel / limit * SurfaceGesture.followStiffness)
     }
 
     /// Width leads when growing wider; otherwise height leads. The other axis follows after `lag`.
@@ -199,10 +301,13 @@ struct SurfaceHost<Content: View>: View {
             height: min(max(natural.height, SurfaceMetrics.minSide), SurfaceMetrics.maxSize.height)
         )
         guard clamped != target else { return }
-        // Bigger morphs blur more, up to the full peak.
+        // Bigger morphs blur more, up to the full peak. Small ones (a line of streamed text,
+        // say) skip the blur so steady growth doesn't flicker.
         let travel = max(abs(clamped.width - target.width), abs(clamped.height - target.height))
-        morphPeak = SurfaceMotion.morphBlur * min(travel / SurfaceMotion.morphBlurRange, 1)
-        morphCount += 1
+        if travel >= SurfaceMotion.morphBlurMinTravel {
+            morphPeak = SurfaceMotion.morphBlur * min(travel / SurfaceMotion.morphBlurRange, 1)
+            morphCount += 1
+        }
         target = clamped
         followTask?.cancel()
 
@@ -261,8 +366,11 @@ private struct SpillHeight<Content: View>: View, Animatable {
 
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
-        content()
+        // The content hangs centred over a box exactly the glass's size, so its own size
+        // (which animates during swaps) can never pull it off centre.
+        Color.clear
             .frame(width: w, height: h)
+            .overlay { content() }
             .clipShape(shape)
             .background {
                 shape.fill(SurfaceShade.gradient)
