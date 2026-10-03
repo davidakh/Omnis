@@ -17,14 +17,40 @@ struct ChatTitle {
     var title: String
 }
 
-/// Runs after a session ends: writes its title and summary, then indexes it. Transcripts
-/// longer than the model's window are summarized in parts first, and the part notes are then
-/// summarized together.
+/// Notes already written for the start of a session while it was recording.
+struct LiveNotes {
+    var notes: [String] = []
+    /// How many transcript lines (from the start) the notes cover.
+    var coveredLines = 0
+}
+
+/// Writes each finished session's title and summary, then indexes it.
+///
+/// Reading a long transcript is what takes the time (an hour of talk is about 20k tokens,
+/// several times the on-device window), so the work is spread out: while a session records,
+/// each stretch of about 6k tokens is turned into short notes in the background. When it ends,
+/// only the stretch since the last notes is left to read before the final summary, so it
+/// arrives in seconds whatever the session's length. Sessions finished without live notes
+/// (e.g. after a quit) are read in parts the same way.
+@Observable
 final class SessionProcessor {
-    private let store: SessionStore
-    private let index: SessionIndex
-    private let resolver: ModelResolver
-    private var inFlight: Set<UUID> = []
+    /// What's happening for sessions being summarized ("Summarizing part 2 of 3"), by id.
+    private(set) var progress: [UUID: String] = [:]
+
+    @ObservationIgnored private let store: SessionStore
+    @ObservationIgnored private let index: SessionIndex
+    @ObservationIgnored private let resolver: ModelResolver
+    @ObservationIgnored private var inFlight: Set<UUID> = []
+
+    @ObservationIgnored private var live = LiveNotes()
+    @ObservationIgnored private var liveTask: Task<Void, Never>?
+
+    /// Most notes a part may produce; short notes keep each call quick and the combined notes
+    /// small enough for the final summary.
+    private static let noteTokens = 350
+    /// Roughly 6k tokens of transcript: about 25 minutes of talk, and well inside the window
+    /// once the instructions and notes are added.
+    private static let livePartCharacters = 25_000
 
     init(store: SessionStore, index: SessionIndex, resolver: ModelResolver) {
         self.store = store
@@ -39,13 +65,20 @@ final class SessionProcessor {
         }
     }
 
-    func process(_ session: Session) async {
+    func process(_ session: Session, liveNotes: LiveNotes? = nil) async {
         guard !inFlight.contains(session.id) else { return }
         inFlight.insert(session.id)
-        defer { inFlight.remove(session.id) }
+        defer {
+            inFlight.remove(session.id)
+            progress[session.id] = nil
+        }
 
-        let transcript = session.transcriptText
-        if !transcript.isEmpty, let digest = await digest(of: transcript) {
+        let lines = session.orderedLines
+        let covered = min(liveNotes?.coveredLines ?? 0, lines.count)
+        let remaining = lines.dropFirst(covered).map { "\($0.speaker): \($0.text)" }.joined(separator: "\n")
+        let notes = liveNotes?.notes ?? []
+
+        if !lines.isEmpty, let digest = await digest(transcript: remaining, notes: notes, sessionID: session.id) {
             if !session.hasCustomTitle, let title = Self.shortTitle(digest.title) {
                 session.title = title
             }
@@ -57,6 +90,42 @@ final class SessionProcessor {
         store.save()
         index.index(session)
     }
+
+    // MARK: - Live notes
+
+    /// Starts collecting notes for a new recording.
+    func liveSessionStarted() {
+        liveTask?.cancel()
+        liveTask = nil
+        live = LiveNotes()
+    }
+
+    /// Called as the live transcript grows: once enough new talk has built up since the last
+    /// notes, writes notes for it in the background.
+    func liveTranscriptChanged(_ lines: [LiveLine]) {
+        guard liveTask == nil, lines.count > live.coveredLines else { return }
+        let pending = lines[live.coveredLines...].map { "\($0.speaker): \($0.text)" }.joined(separator: "\n")
+        guard pending.count >= Self.livePartCharacters, let model = try? resolver.onDevice() else { return }
+        let upTo = lines.count
+        liveTask = Task { [weak self] in
+            guard let self else { return }
+            if let notes = try? await self.notes(for: pending, model: model) {
+                self.live.notes.append(notes)
+                self.live.coveredLines = upTo
+            }
+            self.liveTask = nil
+        }
+    }
+
+    /// Ends the recording's notes, waiting for any in progress, and hands them over.
+    func finishLiveNotes() async -> LiveNotes {
+        await liveTask?.value
+        liveTask = nil
+        defer { live = LiveNotes() }
+        return live
+    }
+
+    // MARK: - Chat titles
 
     /// Names a new chat after its first exchange. Titles are short, so the on-device model is
     /// used directly: it's fast and always available.
@@ -86,7 +155,7 @@ final class SessionProcessor {
 
     // MARK: - Summarizing
 
-    private func digest(of transcript: String) async -> SessionDigest? {
+    private func digest(transcript: String, notes: [String], sessionID: UUID) async -> SessionDigest? {
         let model: ResolvedModel
         if let chosen = try? await resolver.resolve() {
             model = chosen
@@ -96,23 +165,46 @@ final class SessionProcessor {
             return nil
         }
         do {
-            return try await digest(of: transcript, model: model)
+            return try await digest(transcript: transcript, notes: notes, model: model, sessionID: sessionID)
         } catch where model.provider != .appleOnDevice {
             // Prefer a summary from the on-device model over none at all.
             guard let fallback = try? resolver.onDevice() else { return nil }
-            return try? await digest(of: transcript, model: fallback)
+            return try? await digest(transcript: transcript, notes: notes, model: fallback, sessionID: sessionID)
         } catch {
             return nil
         }
     }
 
-    private func digest(of transcript: String, model: ResolvedModel) async throws -> SessionDigest {
-        let notes = try await condense(transcript, model: model)
+    private func digest(transcript: String, notes: [String], model: ResolvedModel, sessionID: UUID) async throws -> SessionDigest {
+        let limit = Int(Double(model.promptBudget) * 0.85)
+        var material: String
+        var isNotes: Bool
+
+        if notes.isEmpty, try await tokens(transcript, model) <= limit {
+            // Short enough to summarize directly.
+            material = transcript
+            isNotes = false
+        } else {
+            var allNotes = notes
+            if !transcript.isEmpty {
+                allNotes += try await notes(forLongText: transcript, model: model, sessionID: sessionID)
+            }
+            material = allNotes.joined(separator: "\n")
+            isNotes = true
+            // Very long sessions: condense the notes themselves until they fit.
+            while try await tokens(material, model) > limit {
+                let condensed = try await notes(forLongText: material, model: model, sessionID: sessionID).joined(separator: "\n")
+                guard condensed.count < material.count else { break }
+                material = condensed
+            }
+        }
+
+        progress[sessionID] = String(localized: "Writing the summary")
         let prompt = """
         Write a title and a summary for this recorded session.
 
-        \(notes.isCondensed ? "Notes from the session" : "Transcript"):
-        \(notes.text)
+        \(isNotes ? "Notes from the session" : "Transcript"):
+        \(material)
         """
         let session = LanguageModelSession(
             model: model.model,
@@ -136,37 +228,53 @@ final class SessionProcessor {
         )
     }
 
-    /// Shrinks `text` until it fits comfortably in the model's window by summarizing it in
-    /// parts. Short transcripts pass through untouched.
-    private func condense(_ text: String, model: ResolvedModel) async throws -> (text: String, isCondensed: Bool) {
-        let limit = Int(Double(model.promptBudget) * 0.75)
-        guard model.estimatedTokens(text) > limit else { return (text, false) }
-
-        var current = text
-        while model.estimatedTokens(current) > limit {
-            let partCharacters = Int(Double(limit) * 0.8 * model.charactersPerToken)
-            var notes: [String] = []
-            for part in Self.split(current, maxCharacters: partCharacters) {
-                try Task.checkCancellation()
-                let session = LanguageModelSession(
-                    model: model.model,
-                    instructions: "You take concise notes on parts of meeting transcripts."
-                )
-                let response = try await session.respond(
-                    to: "List the key points, decisions and action items in this part, as short bullets:\n\n\(part)"
-                )
-                notes.append(response.content)
+    /// Notes for text of any length: split into parts that fill the window, each turned into
+    /// short notes. A part that fails is skipped rather than losing the whole summary.
+    private func notes(forLongText text: String, model: ResolvedModel, sessionID: UUID) async throws -> [String] {
+        let parts = try await split(text, model: model)
+        var notes: [String] = []
+        for (number, part) in parts.enumerated() {
+            try Task.checkCancellation()
+            if parts.count > 1 {
+                progress[sessionID] = String(localized: "Summarizing part \(number + 1) of \(parts.count)")
             }
-            let condensed = notes.joined(separator: "\n")
-            // Guard against a model that doesn't shrink the text.
-            guard condensed.count < current.count else { break }
-            current = condensed
+            if let note = try? await self.notes(for: part, model: model) { notes.append(note) }
         }
-        return (current, true)
+        guard !notes.isEmpty else { throw LanguageModelError.timeout(.init(debugDescription: "No part could be summarized")) }
+        return notes
     }
 
-    /// Splits on line boundaries into pieces of at most `maxCharacters`.
-    private static func split(_ text: String, maxCharacters: Int) -> [String] {
+    /// Short notes for one part. If it turns out too long for the window after all, it's
+    /// halved and each half noted.
+    private func notes(for part: String, model: ResolvedModel) async throws -> String {
+        let session = LanguageModelSession(
+            model: model.model,
+            instructions: "You take concise notes on parts of meeting transcripts."
+        )
+        let options = GenerationOptions(maximumResponseTokens: Self.noteTokens)
+        do {
+            return try await session.respond(
+                to: "List up to 8 key points, decisions and action items in this part, as short bullets:\n\n\(part)",
+                options: options
+            ).content
+        } catch LanguageModelError.contextSizeExceeded {
+            let lines = part.components(separatedBy: "\n")
+            guard lines.count > 1 else { throw LanguageModelError.contextSizeExceeded(.init(contextSize: 0, tokenCount: 0, debugDescription: "A single line is too long")) }
+            let middle = lines.count / 2
+            let first = try await notes(for: lines[..<middle].joined(separator: "\n"), model: model)
+            let second = try await notes(for: lines[middle...].joined(separator: "\n"), model: model)
+            return first + "\n" + second
+        }
+    }
+
+    /// Splits on line boundaries into parts that each fill most of the window, sized from the
+    /// text's real tokens-per-character (estimates alone made parts less than half full).
+    private func split(_ text: String, model: ResolvedModel) async throws -> [String] {
+        let totalTokens = max(try await tokens(text, model), 1)
+        let charactersPerToken = Double(text.count) / Double(totalTokens)
+        let partTokens = model.promptBudget - Self.noteTokens - 200
+        let maxCharacters = max(1_000, Int(Double(partTokens) * charactersPerToken))
+
         var parts: [String] = []
         var current = ""
         for line in text.components(separatedBy: "\n") {
@@ -178,5 +286,11 @@ final class SessionProcessor {
         }
         if !current.isEmpty { parts.append(current) }
         return parts
+    }
+
+    /// Exact on device; estimated for other models.
+    private func tokens(_ text: String, _ model: ResolvedModel) async throws -> Int {
+        if model.isOnDevice { return try await SystemLanguageModel.default.tokenCount(for: text) }
+        return model.estimatedTokens(text)
     }
 }
