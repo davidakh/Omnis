@@ -16,9 +16,9 @@ struct SurfaceWindowControls: View {
 
     var body: some View {
         HStack(spacing: 7) {
-            Dot(color: Self.red, glyph: .system("xmark"), action: onQuit)
-            Dot(color: Self.yellow, glyph: .system("minus"), action: onMinimize)
-            Dot(color: Self.green, glyph: .custom("expand"), action: onExpand)
+            Dot(color: .red, glyph: .system("xmark"), action: onQuit)
+            Dot(color: .yellow, glyph: .system("minus"), action: onMinimize)
+            Dot(color: .green, glyph: .custom("expand"), action: onExpand)
         }
         .padding(.horizontal, 9)
         .frame(height: Self.height)
@@ -31,9 +31,20 @@ struct SurfaceWindowControls: View {
         .clipShape(Capsule())
     }
 
-    private static let red = Color(.red)
-    private static let yellow = Color(.yellow)
-    private static let green = Color(.green)
+    /// Each dot's fill (lightening slightly toward the bottom) and the thin darker rim around it.
+    struct DotColor {
+        let top: Color
+        let bottom: Color
+        let rim: Color
+
+        static let red = DotColor(top: Color(hex: 0xDF9581), bottom: Color(hex: 0xDEA18F), rim: Color(hex: 0xB14206))
+        static let yellow = DotColor(top: Color(hex: 0xE9CA67), bottom: Color(hex: 0xEED76F), rim: Color(hex: 0x933E06))
+        static let green = DotColor(top: Color(hex: 0xA5D16C), bottom: Color(hex: 0xBBDA92), rim: Color(hex: 0x32620F))
+
+        var fill: LinearGradient {
+            LinearGradient(colors: [top, bottom], startPoint: .top, endPoint: .bottom)
+        }
+    }
 
     private struct Dot: View {
         enum Glyph {
@@ -42,7 +53,7 @@ struct SurfaceWindowControls: View {
             case custom(String)
         }
 
-        let color: Color
+        let color: DotColor
         let glyph: Glyph
         let action: (() -> Void)?
 
@@ -56,19 +67,18 @@ struct SurfaceWindowControls: View {
                     .foregroundStyle(.black.opacity(0.52))
                     .blendMode(.plusDarker)
                     .frame(width: Self.size, height: Self.size)
+                    .background(Circle().fill(color.fill))
+                    .overlay(Circle().strokeBorder(color.rim.opacity(0.6), lineWidth: 0.5))
+                    .compositingGroup()
                     .contentShape(Circle())
             }
             .buttonStyle(.plain)
-            // Tinted glass that reacts to the pointer and to presses; dimmed and inert when the
-            // surface is already at that size.
-            .glassEffect(glass, in: Circle())
+            // Clear glass over the color, so the dot reacts to the pointer and to presses; dimmed
+            // and inert when the surface is already at that size.
+            .glassEffect(isEnabled ? .clear.interactive() : .clear, in: Circle())
             .opacity(isEnabled ? 1 : 0.4)
             .disabled(!isEnabled)
             .animation(.smooth(duration: 0.2), value: isEnabled)
-        }
-
-        private var glass: Glass {
-            isEnabled ? .regular.tint(color).interactive() : .regular.tint(color.opacity(0.5))
         }
 
         @ViewBuilder
@@ -78,5 +88,16 @@ struct SurfaceWindowControls: View {
             case .custom(let name): Image(name).font(.system(size: 8, weight: .black))
             }
         }
+    }
+}
+
+private extension Color {
+    /// A color from a hex value like 0xDF9581.
+    init(hex: UInt32) {
+        self.init(
+            red: Double((hex >> 16) & 0xFF) / 255,
+            green: Double((hex >> 8) & 0xFF) / 255,
+            blue: Double(hex & 0xFF) / 255
+        )
     }
 }
