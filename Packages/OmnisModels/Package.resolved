@@ -1,0 +1,42 @@
+{
+  "originHash" : "b96a93ee88318c7bd8d6c913844b81bccacea6da16b399e62e15c5d9917831e3",
+  "pins" : [
+    {
+      "identity" : "mlx-swift",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/PrismML-Eng/mlx-swift",
+      "state" : {
+        "branch" : "prism",
+        "revision" : "2a673fa8324ca9900f37445db1f66f4400e4af15"
+      }
+    },
+    {
+      "identity" : "swift-numerics",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-numerics",
+      "state" : {
+        "revision" : "0c0290ff6b24942dadb83a929ffaaa1481df04a2",
+        "version" : "1.1.1"
+      }
+    },
+    {
+      "identity" : "swift-syntax",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/swiftlang/swift-syntax.git",
+      "state" : {
+        "revision" : "79e4b74a295b6eb74a8b585e3a39d29e70c1dbd1",
+        "version" : "603.0.2"
+      }
+    },
+    {
+      "identity" : "swift-tokenizers",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/DePasqualeOrg/swift-tokenizers.git",
+      "state" : {
+        "revision" : "8a66828e7a094d94e282754321c831150129ea25",
+        "version" : "0.7.4"
+      }
+    }
+  ],
+  "version" : 3
+}

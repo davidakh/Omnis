@@ -11,13 +11,13 @@ struct ModelSetupScreen: View {
     var body: some View {
         VStack(spacing: 22) {
             Text("Download a Model")
-                .font(.system(size: 17, weight: .semibold))
+                .font(.body.weight(.semibold))
                 .foregroundStyle(.white)
                 .toolbarTitleShadow()
 
             VStack(spacing: 14) {
                 ForEach(LocalModelOption.all) { model in
-                    ModelRow(model: model, state: store.state(of: model), isInstalled: store.isInstalled(model)) {
+                    LocalModelRow(model: model, state: store.state(of: model), isInstalled: store.isInstalled(model), isSelected: false) {
                         store.download(model)
                     } cancel: {
                         store.cancel(model)
@@ -38,23 +38,27 @@ struct ModelSetupScreen: View {
     }
 }
 
-private struct ModelRow: View {
+/// One downloadable model: its tile, name and size (or progress), and download, stop, retry or
+/// use. Shared by setup and Settings.
+struct LocalModelRow: View {
     let model: LocalModelOption
     let state: LocalModelStore.DownloadState
     let isInstalled: Bool
+    /// The model Omnis answers with now.
+    let isSelected: Bool
     let download: () -> Void
     let cancel: () -> Void
     let use: () -> Void
 
     var body: some View {
         HStack(spacing: 14) {
-            BonsaiTile(size: 48)
+            BonsaiTile(size: 32)
             VStack(alignment: .leading, spacing: 2) {
                 Text(model.name)
-                    .font(.system(size: 16, weight: .semibold))
+                    .font(.body.weight(.semibold))
                     .foregroundStyle(.white)
                 Text(subtitle)
-                    .font(.system(size: 13))
+                    .font(.footnote)
                     .foregroundStyle(.white.opacity(0.55))
                     .contentTransition(.numericText())
                     .animation(.smooth(duration: 0.2), value: subtitle)
@@ -77,6 +81,7 @@ private struct ModelRow: View {
         case .failed(let message):
             return message
         case .idle:
+            if isSelected { return String(localized: "In use") }
             if isInstalled { return String(localized: "Downloaded") }
             if !model.fitsThisMac { return String(localized: "Needs \(model.requiredMemory) GB of memory") }
             return String(localized: "\(model.size), \(model.requiredMemory)GBs Required")
@@ -103,7 +108,7 @@ private struct ModelRow: View {
             SurfaceButton("arrow.clockwise", action: download)
                 .transition(.blurReplace)
         case .idle where isInstalled:
-            SurfaceButton("checkmark", style: .prominent, action: use)
+            SurfaceButton("checkmark", style: isSelected ? .prominent : .standard, action: use)
                 .transition(.blurReplace)
         case .idle:
             SurfaceButton("arrow.down", action: download)
@@ -113,7 +118,7 @@ private struct ModelRow: View {
     }
 }
 
-/// The Bonsai mark on a light rounded tile, like an app icon.
+/// The Bonsai mark on a warm off-white (#E6E4E0) rounded tile, like an app icon.
 struct BonsaiTile: View {
     let size: CGFloat
 
@@ -124,6 +129,6 @@ struct BonsaiTile: View {
             .foregroundStyle(.black)
             .padding(size * 0.2)
             .frame(width: size, height: size)
-            .background(Color(white: 0.93), in: RoundedRectangle(cornerRadius: size * 0.26, style: .continuous))
+            .background(Color(red: 0xE6 / 255, green: 0xE4 / 255, blue: 0xE0 / 255), in: RoundedRectangle(cornerRadius: size * 0.26, style: .continuous))
     }
 }

@@ -1,5 +1,6 @@
 import Foundation
 import FoundationModels
+import OmnisModels
 import Security
 
 /// A model ready to prompt, plus what context building needs to know about it.
@@ -11,9 +12,23 @@ struct ResolvedModel {
     let promptBudget: Int
     /// For estimating token counts from text before the prompt is assembled.
     let charactersPerToken: Double
+    /// Loads the weights into memory (returns at once when they already are), and the name to
+    /// show while it does. Only downloaded models need it.
+    var load: (name: String, run: @Sendable () async throws -> Void)? = nil
+    /// Tokens of context a chat answer reads. Smaller than `promptBudget` for downloaded models:
+    /// the model has to read every prompt token before its first word, so a short, focused
+    /// prompt answers far sooner. Summaries, written in the background, still get the full budget.
+    var chatBudget: Int? = nil
+    /// Words an answer may run to; answers are short, so this only stops a runaway reply.
+    var maximumAnswerTokens: Int? = nil
+
+    var answerBudget: Int { chatBudget ?? promptBudget }
 
     var supportsVision: Bool { model.capabilities.contains(.vision) }
     var supportsGuidedGeneration: Bool { model.capabilities.contains(.guidedGeneration) }
+    /// Can call tools, e.g. to search and read sessions itself. Only offered to models with a
+    /// large context; the small on-device window has no room for what the tools return.
+    var supportsLookUp: Bool { model.capabilities.contains(.toolCalling) && promptBudget >= 16_000 }
 
     /// The on-device model can count tokens exactly; others are estimated.
     var isOnDevice: Bool { provider == .appleOnDevice }
@@ -33,6 +48,8 @@ enum ModelUnavailableError: LocalizedError {
     /// rejects every request even though the model reports itself available.
     case privateCloudNotEntitled
     case missingAPIKey(ModelProvider)
+    /// No downloaded model is chosen, or its files are missing.
+    case localModelMissing
 
     var errorDescription: String? {
         switch self {
@@ -48,6 +65,8 @@ enum ModelUnavailableError: LocalizedError {
             String(localized: "This build of Omnis isn't signed for Private Cloud Compute.")
         case .missingAPIKey(let provider):
             String(localized: "Add your \(provider.displayName) API key in Settings.")
+        case .localModelMissing:
+            String(localized: "Download a model in Settings to answer on this Mac.")
         }
     }
 }
@@ -62,9 +81,19 @@ struct ModelResolver {
     private static let privateCloudReserve = 6_000
     /// Cloud models have huge windows; capping the prompt keeps answers fast and cheap.
     private static let cloudPromptBudget = 48_000
+    /// Downloaded models: room for long sessions without the KV cache taking most of the Mac's memory.
+    private static let localPromptBudget = 32_768
+    /// Kept free for the instructions, thinking and the answer.
+    private static let localReserve = 6_000
+    /// What a chat answer reads: the best passages, a session in full when one fits, and the
+    /// recent sessions list. The model's lookup tools fetch more when a question needs it.
+    private static let localChatBudget = 8_000
 
     func resolve(_ provider: ModelProvider? = nil) async throws -> ResolvedModel {
         switch provider ?? settings.provider {
+        case .local:
+            return try local()
+
         case .appleOnDevice:
             return try onDevice()
 
@@ -108,6 +137,39 @@ struct ModelResolver {
         }
     }
 
+    /// The model for everything but realtime work (live notes, auto answer): highlights,
+    /// titles, definitions and quick checks. That's the user's chosen model (Bonsai, normally),
+    /// or Apple's on-device model if it can't be used or can't produce the structured output
+    /// the job needs.
+    func preferred(needsGuidedGeneration: Bool = false) async -> ResolvedModel? {
+        if let chosen = try? await resolve(), !needsGuidedGeneration || chosen.supportsGuidedGeneration {
+            return chosen
+        }
+        return try? onDevice()
+    }
+
+    /// The downloaded model (Bonsai), run with MLX. Loading is deferred to the first request
+    /// and then shared process-wide, so resolving it again is cheap.
+    func local() throws -> ResolvedModel {
+        guard let option = settings.localModel, LocalModelStore.isComplete(option) else {
+            throw ModelUnavailableError.localModelMissing
+        }
+        // Thinking off: Bonsai's template thinks by default, and that hidden thinking can run
+        // for minutes before a word of the answer appears. Without `.reasoning` declared, MLX
+        // renders the prompt with thinking disabled, so answers start streaming right away.
+        let model = LocalModel.languageModel(at: option.directory, vision: option.supportsVision, reasoning: false)
+        return ResolvedModel(
+            provider: .local,
+            model: model,
+            // Far below what the models can read, to keep memory bounded while answering.
+            promptBudget: min(option.contextLength, Self.localPromptBudget) - Self.localReserve,
+            charactersPerToken: 3.5,
+            load: (option.name, { try await model.preload() }),
+            chatBudget: Self.localChatBudget,
+            maximumAnswerTokens: 800
+        )
+    }
+
     /// The on-device model, which is also the fallback when Private Cloud Compute fails.
     func onDevice() throws -> ResolvedModel {
         let model = SystemLanguageModel.default
@@ -133,6 +195,8 @@ struct ModelResolver {
     /// Whether `provider` is set up well enough to try (for Settings).
     func status(of provider: ModelProvider) -> String? {
         switch provider {
+        case .local:
+            return (try? local()) == nil ? String(localized: "Download a model to use it") : nil
         case .appleOnDevice:
             return (try? onDevice()) == nil ? String(localized: "Unavailable on this Mac") : nil
         case .applePrivateCloud:

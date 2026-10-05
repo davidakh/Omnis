@@ -24,6 +24,13 @@ nonisolated enum AudioStorage {
         return name
     }
 
+    /// A fresh folder for another recording of the same session, inside its first one.
+    static func makeFolder(inside parent: String) -> String {
+        let name = "\(parent)/\(UUID().uuidString)"
+        try? FileManager.default.createDirectory(at: url(for: name), withIntermediateDirectories: true)
+        return name
+    }
+
     static func delete(_ folder: String) {
         try? FileManager.default.removeItem(at: url(for: folder))
     }
@@ -54,6 +61,8 @@ nonisolated final class AudioFileWriter: @unchecked Sendable {
     // Only touched on `queue`.
     private var files: [AudioSource: AVAudioFile] = [:]
     private var converters: [AudioSource: AVAudioConverter] = [:]
+    /// Frames written to each file, to fill gaps where capture stopped.
+    private var framesWritten: [AudioSource: AVAudioFramePosition] = [:]
     private var timing = AudioTiming()
     private var isPaused = false
     private var isFinished = false
@@ -73,8 +82,33 @@ nonisolated final class AudioFileWriter: @unchecked Sendable {
                 guard let output = convert(buffer, to: file.processingFormat, source: source) else { return }
                 if isPaused || silent { Self.silence(output) }
                 try file.write(from: output)
+                framesWritten[source, default: 0] += AVAudioFramePosition(output.frameLength)
             } catch {
                 // A buffer that can't be written is dropped; the recording carries on.
+            }
+        }
+    }
+
+    /// Writes silence for any time no audio arrived (capture stopped and restarted), so what's
+    /// recorded next stays lined up with the transcript.
+    func fillGap() {
+        queue.async { [self] in
+            guard !isFinished else { return }
+            for (source, file) in files {
+                let start = (source == .microphone ? timing.microphone : timing.system) ?? 0
+                let rate = file.processingFormat.sampleRate
+                let expected = AVAudioFramePosition((Date.now.timeIntervalSince(startedAt) - start) * rate)
+                var missing = expected - framesWritten[source, default: 0]
+                guard missing > AVAudioFramePosition(rate / 2) else { continue }
+                let chunk = AVAudioFrameCount(rate)
+                guard let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: chunk) else { continue }
+                while missing > 0 {
+                    buffer.frameLength = AVAudioFrameCount(min(AVAudioFramePosition(chunk), missing))
+                    Self.silence(buffer)
+                    guard (try? file.write(from: buffer)) != nil else { break }
+                    framesWritten[source, default: 0] += AVAudioFramePosition(buffer.frameLength)
+                    missing -= AVAudioFramePosition(buffer.frameLength)
+                }
             }
         }
     }

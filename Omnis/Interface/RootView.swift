@@ -12,7 +12,7 @@ struct RootView: View {
             onExpand: expandAction,
             onBack: backAction,
             // No grabber on the main compact bar or the live session bars.
-            showsGrabber: ![.compact, .live, .liveCompact, .liveAsk].contains(state.mode)
+            showsGrabber: ![.compact, .live, .liveCompact, .liveAsk, .modelSetup].contains(state.mode)
         ) {
             switch state.mode {
             case .compact: HomeBar(state: state)
@@ -32,6 +32,7 @@ struct RootView: View {
             case .liveAnswer(let thread):
                 AnswerView(state: state, thread: thread) { state.mode = .live }
             case .settings: SettingsScreen(state: state)
+            case .modelSetup: ModelSetupScreen(state: state)
             }
         }
     }
@@ -52,6 +53,7 @@ struct RootView: View {
         case .answerCompact: nil
         case .liveAsk, .liveAnswer: { state.mode = .live }
         case .settings: { state.closeSettings() }
+        case .modelSetup: nil
         }
     }
 
@@ -63,7 +65,7 @@ struct RootView: View {
         case .sessions, .sessionsCompact: { state.closeSessions() }
         case .answer(let thread), .answerCompact(let thread):
             thread.isResumed ? { state.closeAnswer() } : nil
-        case .compact, .expanded, .live, .liveCompact, .liveTranscript, .liveAsk, .liveAnswer, .settings: nil
+        case .compact, .expanded, .live, .liveCompact, .liveTranscript, .liveAsk, .liveAnswer, .settings, .modelSetup: nil
         }
     }
 
@@ -74,7 +76,7 @@ struct RootView: View {
         case .sessionCompact(let session): { state.mode = .session(session) }
         case .liveCompact: { state.mode = .live }
         case .answerCompact(let thread): { state.mode = .answer(thread) }
-        case .expanded, .sessions, .session, .live, .liveTranscript, .answer, .liveAsk, .liveAnswer, .settings: nil
+        case .expanded, .sessions, .session, .live, .liveTranscript, .answer, .liveAsk, .liveAnswer, .settings, .modelSetup: nil
         }
     }
 }

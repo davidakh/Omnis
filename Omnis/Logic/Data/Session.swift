@@ -14,6 +14,9 @@ final class Session {
     var createdAt: Date
     var endedAt: Date?
     var summary: String?
+    /// One sentence saying what the session is and who's in it ("A podcast interview with Emma
+    /// Watson about her film work"), so a model can tell sessions apart at a glance.
+    var definition: String? = nil
     /// False until the title and summary have been generated and the session indexed.
     var isProcessed: Bool
     /// Set once the user renames the session, so generated titles never overwrite theirs.
@@ -24,6 +27,12 @@ final class Session {
     var sectionsData: Data? = nil
     /// Questions asked during the session, JSON-encoded; read and write through `chats`.
     var chatsData: Data? = nil
+    /// Audio recorded each time the session was resumed (folders inside `AudioStorage.directory`),
+    /// JSON-encoded; read and write through `resumedAudioFolders`.
+    var resumedAudioData: Data? = nil
+    /// The length of the session's timeline, once it has been resumed (its wall-clock span then
+    /// includes the gaps between recordings, which the timeline doesn't).
+    var recordedLength: TimeInterval? = nil
 
     @Relationship(deleteRule: .cascade, inverse: \TranscriptLine.session)
     var lines: [TranscriptLine] = []
@@ -62,6 +71,24 @@ final class Session {
     var chats: [SessionChat] {
         get { chatsData.flatMap { try? JSONDecoder().decode([SessionChat].self, from: $0) } ?? [] }
         set { chatsData = newValue.isEmpty ? nil : try? JSONEncoder().encode(newValue) }
+    }
+
+    /// Recordings added by resuming the session, in order. Each one's audio is already placed on
+    /// the session's timeline (its timing starts where the session had left off).
+    var resumedAudioFolders: [String] {
+        get { resumedAudioData.flatMap { try? JSONDecoder().decode([String].self, from: $0) } ?? [] }
+        set { resumedAudioData = newValue.isEmpty ? nil : try? JSONEncoder().encode(newValue) }
+    }
+
+    /// Every recording of the session, first to last.
+    var audioFolders: [String] { (audioFolder.map { [$0] } ?? []) + resumedAudioFolders }
+
+    /// How long the session's timeline runs: where a resumed recording picks up.
+    var length: TimeInterval {
+        let spoken = (lines.map(\.offset).max() ?? 0) + 1
+        if let recordedLength { return max(recordedLength, spoken) }
+        if let endedAt { return max(endedAt.timeIntervalSince(createdAt), spoken) }
+        return spoken
     }
 
     var orderedLines: [TranscriptLine] { lines.sorted { $0.order < $1.order } }

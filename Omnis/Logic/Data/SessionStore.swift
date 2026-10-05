@@ -96,6 +96,33 @@ final class SessionStore {
         return session
     }
 
+    /// Saves a resumed recording into `session`: the whole transcript (what was there plus what
+    /// was added), the new audio, and its chats. The summary, highlights and index are cleared
+    /// so they're written again for the whole session.
+    func saveResumed(_ session: Session, lines: [LiveLine], audioFolder: String?, length: TimeInterval, chats: [SessionChat]) {
+        for line in session.lines { context.delete(line) }
+        for (order, line) in lines.enumerated() {
+            let record = TranscriptLine(order: order, speaker: line.speaker, text: line.text, offset: line.offset)
+            record.session = session
+            context.insert(record)
+        }
+        if let audioFolder {
+            if session.audioFolder == nil {
+                session.audioFolder = audioFolder
+            } else {
+                session.resumedAudioFolders.append(audioFolder)
+            }
+        }
+        session.chats += chats
+        session.recordedLength = length
+        session.endedAt = .now
+        session.summary = nil
+        session.definition = nil
+        session.sections = []
+        session.isProcessed = false
+        save()
+    }
+
     /// Adds one question / answer turn to a chat, creating the chat on its first turn.
     /// Returns the chat's id so follow-ups land in the same chat.
     @discardableResult

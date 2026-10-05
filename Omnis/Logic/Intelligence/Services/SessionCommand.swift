@@ -36,7 +36,7 @@ enum SessionCommand {
     private static let fillers = [
         "hey omnis", "omnis", "ok", "okay", "please", "can you", "could you", "would you",
         "will you", "can we", "could we", "lets", "let us", "i want to", "i would like to",
-        "i need to", "go ahead and", "and"
+        "i need to", "go ahead and"
     ]
 
     private static let requests = [

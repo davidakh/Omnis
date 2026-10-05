@@ -166,6 +166,26 @@ final class SessionIndex {
         return built
     }
 
+    /// The newest recorded sessions (not chats), newest first, so the model knows which
+    /// sessions exist and when, not only the passages a search returned.
+    func recentSessions(limit: Int) -> [Session] {
+        Array(store.sessions.prefix(limit))
+    }
+
+    /// A recorded session by id, for reading it in full.
+    func session(withID id: UUID) -> Session? {
+        store.session(withID: id).flatMap { $0.kind == .session ? $0 : nil }
+    }
+
+    /// A recorded session by id or title (exact, then the newest whose title contains it).
+    func session(matching reference: String) -> Session? {
+        let text = reference.trimmingCharacters(in: .whitespacesAndNewlines.union(.init(charactersIn: "\"“”")))
+        if let id = UUID(uuidString: text), let session = session(withID: id) { return session }
+        let lowered = text.lowercased()
+        return store.sessions.first { $0.title.lowercased() == lowered }
+            ?? store.sessions.first { $0.title.lowercased().contains(lowered) }
+    }
+
     /// The best passages for `query`, at most `perSession` from any one session so a single
     /// long meeting can't crowd out the rest.
     func search(_ query: String, limit: Int = 8, perSession: Int = 3, excluding excluded: Set<UUID> = []) -> [SearchHit] {
@@ -323,14 +343,13 @@ final class SessionIndex {
 
     /// A second pass over the filter that matches by meaning ("travel plans" finds a Lisbon
     /// trip, "programming" a Swift chat), where the instant ranking only sees shared words and
-    /// coarse embeddings. The on-device model picks items by title; picks the instant ranking
+    /// coarse embeddings. The chosen model picks items by title; picks the instant ranking
     /// also found go first, then the instant ranking's other matches, then the model's own
     /// picks after each passes a focused yes/no check (so a vague search can't invent one).
     /// Returns nil if the model isn't available, so the instant results stay.
-    func refine(_ items: [Session], matching query: String) async -> [Session]? {
+    func refine(_ items: [Session], matching query: String, using model: (any LanguageModel)?) async -> [Session]? {
         let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        let model = SystemLanguageModel.default
-        guard !query.isEmpty, !items.isEmpty, case .available = model.availability else { return nil }
+        guard !query.isEmpty, !items.isEmpty, let model else { return nil }
 
         let scored = scoredMatches(items, matching: query)
         let instant = scored.map(\.item)
@@ -364,7 +383,7 @@ final class SessionIndex {
         let agreedIDs = Set(agreed.map(\.id))
         var confirmed: [Session] = []
         for item in picks where !instantIDs.contains(item.id) {
-            if await confirm(item, matches: query, passage: passages[item.id]) { confirmed.append(item) }
+            if await confirm(item, matches: query, passage: passages[item.id], using: model) { confirmed.append(item) }
         }
         // Once the model has found something that holds up, instant matches it passed over stay
         // only if strong; a single shared word ("plans") isn't enough to outrank what it found.
@@ -374,8 +393,8 @@ final class SessionIndex {
     }
 
     /// A focused yes/no on one item, for picks nothing else supports.
-    private func confirm(_ item: Session, matches query: String, passage: String?) async -> Bool {
-        let session = LanguageModelSession(model: SystemLanguageModel.default, instructions: """
+    private func confirm(_ item: Session, matches query: String, passage: String?, using model: any LanguageModel) async -> Bool {
+        let session = LanguageModelSession(model: model, instructions: """
             Decide whether an item from the user's library matches their search. Say unrelated \
             unless the item is genuinely about what's searched for.
             """)

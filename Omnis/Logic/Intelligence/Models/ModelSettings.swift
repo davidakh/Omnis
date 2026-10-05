@@ -3,6 +3,9 @@ import Security
 
 /// Where answers and summaries come from.
 enum ModelProvider: String, CaseIterable, Identifiable, Codable {
+    /// A model downloaded from Hugging Face and run on this Mac with MLX (Bonsai). Answers
+    /// chats and writes summaries; live notes and highlights stay on Apple's on-device model.
+    case local
     /// Apple Foundation Models on device: private, free, offline, small context window.
     case appleOnDevice
     /// Apple Foundation Models on Private Cloud Compute: larger context and reasoning,
@@ -14,10 +17,11 @@ enum ModelProvider: String, CaseIterable, Identifiable, Codable {
     var id: Self { self }
 
     /// The providers offered in Settings. Claude and OpenAI use the user's own API key.
-    static let selectable: [ModelProvider] = [.appleOnDevice, .applePrivateCloud, .anthropic, .openAI]
+    static let selectable: [ModelProvider] = [.local, .appleOnDevice, .applePrivateCloud, .anthropic, .openAI]
 
     var displayName: String {
         switch self {
+        case .local: String(localized: "Bonsai")
         case .appleOnDevice: String(localized: "Apple Intelligence (On Device)")
         case .applePrivateCloud: String(localized: "Apple Intelligence (Private Cloud)")
         case .anthropic: String(localized: "Claude")
@@ -42,6 +46,13 @@ final class ModelSettings {
     var provider: ModelProvider {
         didSet { defaults.set(provider.rawValue, forKey: Keys.provider) }
     }
+    /// The downloaded model (Hugging Face repo id) that `.local` runs.
+    var localModelID: String? {
+        didSet { defaults.set(localModelID, forKey: Keys.localModelID) }
+    }
+
+    /// The local model chosen, if it's one Omnis offers.
+    var localModel: LocalModelOption? { localModelID.flatMap(LocalModelOption.option(withID:)) }
     var anthropicModel: String {
         didSet { defaults.set(anthropicModel, forKey: Keys.anthropicModel) }
     }
@@ -71,7 +82,8 @@ final class ModelSettings {
         self.defaults = defaults
         // A choice that's no longer offered (e.g. a cloud provider) falls back to on device.
         let saved = defaults.string(forKey: Keys.provider).flatMap(ModelProvider.init)
-        provider = saved.flatMap { ModelProvider.selectable.contains($0) ? $0 : nil } ?? .appleOnDevice
+        provider = saved.flatMap { ModelProvider.selectable.contains($0) ? $0 : nil } ?? .local
+        localModelID = defaults.string(forKey: Keys.localModelID)
         anthropicModel = defaults.string(forKey: Keys.anthropicModel) ?? Self.anthropicModels[0].id
         openAIModel = defaults.string(forKey: Keys.openAIModel) ?? "gpt-5"
         useMicrophone = defaults.object(forKey: Keys.useMicrophone) as? Bool ?? true
@@ -94,6 +106,7 @@ final class ModelSettings {
 
     private enum Keys {
         static let provider = "model.provider"
+        static let localModelID = "model.local.id"
         static let anthropicModel = "model.anthropic.id"
         static let openAIModel = "model.openai.id"
         static let useMicrophone = "context.microphone"

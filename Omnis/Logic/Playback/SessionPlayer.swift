@@ -28,8 +28,8 @@ final class SessionPlayer {
         guard sessionID != session.id else { return }
         unload()
         sessionID = session.id
-        guard let folder = session.audioFolder,
-              let (item, length) = await Self.playerItem(folder: folder),
+        guard !session.audioFolders.isEmpty,
+              let (item, length) = await Self.playerItem(folders: session.audioFolders),
               sessionID == session.id else { return }
 
         let player = AVPlayer(playerItem: item)
@@ -101,14 +101,16 @@ final class SessionPlayer {
 
     // MARK: - Building the track
 
-    /// Both streams placed on the session's timeline: each file starts at the moment it began
-    /// recording, relative to the session's start.
-    private static func playerItem(folder: String) async -> (item: AVPlayerItem, duration: TimeInterval)? {
-        let directory = AudioStorage.url(for: folder)
-        let timing = AudioStorage.timing(in: folder)
+    /// Every recording's streams placed on the session's timeline: each file starts at the
+    /// moment it began recording, relative to the session's start (a resumed recording's
+    /// timing already starts where the session had left off).
+    private static func playerItem(folders: [String]) async -> (item: AVPlayerItem, duration: TimeInterval)? {
         let composition = AVMutableComposition()
         var hasAudio = false
 
+        for folder in folders {
+        let directory = AudioStorage.url(for: folder)
+        let timing = AudioStorage.timing(in: folder)
         for (name, start) in [(AudioStorage.microphoneFile, timing.microphone), (AudioStorage.systemFile, timing.system)] {
             let url = directory.appending(path: name)
             guard FileManager.default.fileExists(atPath: url.path(percentEncoded: false)) else { continue }
@@ -120,6 +122,7 @@ final class SessionPlayer {
             else { continue }
             let at = CMTime(seconds: start ?? 0, preferredTimescale: 600)
             if (try? destination.insertTimeRange(range, of: track, at: at)) != nil { hasAudio = true }
+        }
         }
         let duration = composition.duration.seconds
         guard hasAudio, duration.isFinite, duration > 0 else { return nil }

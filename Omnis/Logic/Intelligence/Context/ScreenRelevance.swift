@@ -25,6 +25,8 @@ struct ScreenRelevance {
     enum Decision { case needed, notNeeded, unsure }
 
     let index: SessionIndex
+    /// Decides the unclear cases with the chosen model.
+    let resolver: ModelResolver
 
     /// A search score at or above this means the question is clearly about a recording.
     private static let sessionMatchScore = 0.5
@@ -78,8 +80,7 @@ struct ScreenRelevance {
     // MARK: - Model
 
     private func ask(_ question: String, previous: AskTurn?) async -> Bool {
-        let model = SystemLanguageModel.default
-        guard case .available = model.availability else { return false }
+        guard let model = await resolver.preferred(needsGuidedGeneration: true)?.model else { return false }
         let session = LanguageModelSession(model: model, instructions: """
             Decide where the answer to the user's message is found. Examples:
             "What does this function do?" -> screen

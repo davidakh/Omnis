@@ -1,6 +1,7 @@
 import AVFoundation
 import CoreGraphics
 import Foundation
+import OSLog
 import Speech
 
 /// Turns a recording session into transcript lines: captures the microphone ("You") and the
@@ -32,6 +33,7 @@ final class LiveTranscriber {
 
     /// - Parameter folder: where to save the session's audio, or nil to keep only the transcript.
     func start(recordingTo folder: URL?) {
+        restarts = 0
         writer = folder.map { AudioFileWriter(folder: $0, startedAt: recorder.startedAt ?? .now) }
         startTask = Task { await begin() }
     }
@@ -173,9 +175,11 @@ final class LiveTranscriber {
         }
 
         if screenAllowed, pipelines[.system] != nil {
+            let includeMicrophone = microphoneAllowed && pipelines[.microphone] != nil
             let capture = SystemAudioCapture(handler: deliver)
             do {
-                try await capture.start(includeMicrophone: microphoneAllowed && pipelines[.microphone] != nil)
+                try await capture.start(includeMicrophone: includeMicrophone)
+                watch(capture, deliver: deliver, includeMicrophone: includeMicrophone)
                 systemCapture = capture
                 return
             } catch where microphoneAllowed && pipelines[.microphone] != nil {
@@ -185,6 +189,39 @@ final class LiveTranscriber {
         let microphone = MicrophoneCapture(handler: deliver)
         try microphone.start()
         microphoneCapture = microphone
+    }
+
+    private static let log = Logger(subsystem: Bundle.main.bundleIdentifier ?? "Omnis", category: "Capture")
+    /// Restarts in a row before giving up, so a stream that can't run doesn't loop forever.
+    private var restarts = 0
+    private static let maximumRestarts = 5
+
+    /// ScreenCaptureKit can stop a stream on its own (a display change, the system reclaiming
+    /// it). Without this the session would carry on looking live while nothing is recorded, so
+    /// capture is started again right away, into the same transcribers and audio files.
+    private func watch(_ capture: SystemAudioCapture, deliver: @escaping @Sendable (AVAudioPCMBuffer, AudioSource) -> Void, includeMicrophone: Bool) {
+        capture.onStop = { [weak self] error in
+            Self.log.error("Audio capture stopped: \(error.localizedDescription, privacy: .public)")
+            Task { @MainActor [weak self] in
+                guard let self, self.systemCapture === capture, self.recorder.isRecording else { return }
+                guard self.restarts < Self.maximumRestarts else {
+                    self.recorder.notice = String(localized: "Recording stopped: \(error.localizedDescription)")
+                    return
+                }
+                self.restarts += 1
+                self.writer?.fillGap()
+                let replacement = SystemAudioCapture(handler: deliver)
+                do {
+                    try await replacement.start(includeMicrophone: includeMicrophone)
+                    self.watch(replacement, deliver: deliver, includeMicrophone: includeMicrophone)
+                    self.systemCapture = replacement
+                    Self.log.info("Audio capture restarted")
+                } catch {
+                    Self.log.error("Audio capture couldn't restart: \(error.localizedDescription, privacy: .public)")
+                    self.recorder.notice = String(localized: "Recording stopped: \(error.localizedDescription)")
+                }
+            }
+        }
     }
 
     // MARK: - Results

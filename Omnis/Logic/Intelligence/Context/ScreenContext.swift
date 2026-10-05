@@ -1,4 +1,5 @@
 import AppKit
+import FoundationModels
 import ScreenCaptureKit
 import Vision
 
@@ -8,17 +9,29 @@ struct ScreenSnapshot {
     let windowTitle: String?
     /// Sent to models that accept images.
     let image: CGImage
-    /// Recognized text, for every model (and the only screen context for text-only ones).
+    /// Recognized text in reading order, one visual row per line, with wide gaps (columns,
+    /// table cells) kept as " | ", for every model.
     let text: String
+    /// What the image shows, by Vision's classifier ("document", "chart", "screenshot"…).
+    let labels: [String]
+    /// The contents of QR codes and barcodes on screen (often links).
+    let codes: [String]
+    /// A description of what's visible (layout, images, charts, UI), written by Apple's
+    /// on-device model for text-only models that can't see the image themselves.
+    var visualDescription: String?
 }
 
 enum ScreenCaptureError: LocalizedError {
     case permissionNeeded
+    /// The Screen source is switched off in Omnis.
+    case turnedOff
     case noWindow
     case captureFailed(String)
 
     var errorDescription: String? {
         switch self {
+        case .turnedOff:
+            String(localized: "Screen not included: the Screen source is turned off.")
         case .permissionNeeded:
             String(localized: "Enable screen context for Omnis")
         case .noWindow:
@@ -78,13 +91,18 @@ enum ScreenContextProvider {
         configuration.ignoreShadowsSingleWindow = true
 
         let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
-        let text = try await recognizeText(in: image)
+        // Read the text, classify the image and decode any codes at once.
+        async let text = recognizeText(in: image)
+        async let labels = classify(image)
+        async let codes = readCodes(in: image)
 
         return ScreenSnapshot(
             appName: window.owningApplication?.applicationName ?? String(localized: "Unknown app"),
             windowTitle: window.title.flatMap { $0.isEmpty ? nil : $0 },
             image: image,
-            text: text
+            text: try await text,
+            labels: await labels,
+            codes: await codes
         )
     }
 
@@ -105,13 +123,73 @@ enum ScreenContextProvider {
         return (preferred?[kCGWindowNumber as String] as? Int).map { CGWindowID($0) }
     }
 
+    /// Has Apple's on-device model describe what's visible, for models that only read text.
+    /// Nil when that model can't take images or isn't available.
+    static func describe(_ image: CGImage) async -> String? {
+        let model = SystemLanguageModel.default
+        guard model.isAvailable, model.capabilities.contains(.vision) else { return nil }
+        let session = LanguageModelSession(model: model, instructions: """
+            You describe a screenshot of one app window for someone who can't see it. Cover what \
+            kind of app or page it is, how it's laid out, and what matters: headings, selected or \
+            highlighted items, images, charts and what they show, buttons, errors and dialogs. \
+            Describe only what's visible; never guess. Plain prose, at most 150 words.
+            """)
+        let response = try? await session.respond(options: GenerationOptions(temperature: 0.1)) {
+            "Describe this window."
+            Attachment(image)
+        }
+        return response?.content.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Text grouped into visual rows, top to bottom and left to right, so tables, sidebars and
+    /// columns keep their shape instead of arriving as one jumbled list.
     private static func recognizeText(in image: CGImage) async throws -> String {
         var request = RecognizeTextRequest()
         request.recognitionLevel = .accurate
         request.usesLanguageCorrection = true
         let observations = try await request.perform(on: image)
+        let pieces: [(text: String, box: CGRect)] = observations.compactMap { observation in
+            guard let text = observation.topCandidates(1).first?.string else { return nil }
+            return (text, observation.boundingBox.cgRect)
+        }
+
+        // Vision's boxes are normalized with the origin at the bottom left.
+        var rows: [[(text: String, box: CGRect)]] = []
+        for piece in pieces.sorted(by: { $0.box.midY > $1.box.midY }) {
+            if let last = rows.last?.last, abs(last.box.midY - piece.box.midY) < min(last.box.height, piece.box.height) * 0.6 {
+                rows[rows.count - 1].append(piece)
+            } else {
+                rows.append([piece])
+            }
+        }
+        return rows.map { row in
+            let sorted = row.sorted { $0.box.minX < $1.box.minX }
+            var line = ""
+            for (index, piece) in sorted.enumerated() {
+                if index > 0 {
+                    // A wide gap is a new column or table cell.
+                    let gap = piece.box.minX - sorted[index - 1].box.maxX
+                    line += gap > 0.04 ? " | " : " "
+                }
+                line += piece.text
+            }
+            return line
+        }
+        .joined(separator: "\n")
+    }
+
+    /// The likeliest few things the image shows; empty if the classifier isn't confident.
+    private static func classify(_ image: CGImage) async -> [String] {
+        guard let observations = try? await ClassifyImageRequest().perform(on: image) else { return [] }
         return observations
-            .compactMap { $0.topCandidates(1).first?.string }
-            .joined(separator: "\n")
+            .filter { $0.hasMinimumPrecision(0.7, forRecall: 0.5) }
+            .sorted { $0.confidence > $1.confidence }
+            .prefix(6)
+            .map { $0.identifier.replacingOccurrences(of: "_", with: " ") }
+    }
+
+    private static func readCodes(in image: CGImage) async -> [String] {
+        guard let observations = try? await DetectBarcodesRequest().perform(on: image) else { return [] }
+        return Array(Set(observations.compactMap(\.payloadString)))
     }
 }

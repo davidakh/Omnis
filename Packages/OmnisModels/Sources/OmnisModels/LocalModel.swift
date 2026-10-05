@@ -10,21 +10,22 @@ import MLXVLM
 @available(macOS 27.0, *)
 public enum LocalModel {
     /// - Parameters:
-    ///   - directory: The folder holding the model's files.
-    ///   - name: A stable identity for the model cache (the Hugging Face repo id).
+    ///   - directory: The folder holding the model's files. Its name is the model's identity
+    ///     in the cache, so each model needs its own folder.
     ///   - vision: Load it as a vision-language model, so it can look at images.
     ///   - reasoning: The model can think before it answers.
+    ///   - tools: The model can call tools (e.g. to look things up).
     public static func languageModel(
         at directory: URL,
-        name: String,
         vision: Bool,
-        reasoning: Bool
+        reasoning: Bool,
+        tools: Bool = true
     ) -> MLXLanguageModel {
-        var configuration = ModelConfiguration(directory: directory)
-        configuration.name = name
+        let configuration = ModelConfiguration(directory: directory)
         var capabilities: [LanguageModelCapabilities.Capability] = [.guidedGeneration]
         if vision { capabilities.append(.vision) }
         if reasoning { capabilities.append(.reasoning) }
+        if tools { capabilities.append(.toolCalling) }
         return MLXLanguageModel(
             configuration: configuration,
             capabilities: capabilities,

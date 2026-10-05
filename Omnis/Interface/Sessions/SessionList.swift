@@ -101,7 +101,7 @@ private struct SessionRow: View {
         .contextMenu {
             Button("Select", systemImage: "checkmark.circle") { state.startSelecting(with: session.id) }
             Button("Rename", systemImage: "pencil") { state.renamingID = session.id }
-            ShareLink(item: session.title) {
+            ShareLink(item: session.shareText, subject: Text(session.title)) {
                 Label("Share", systemImage: "square.and.arrow.up")
             }
             Divider()

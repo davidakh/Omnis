@@ -2,13 +2,44 @@ import Foundation
 import FoundationModels
 import OSLog
 
+/// Catches names a model added that aren't in the source: capitalized words (past the first
+/// word) and titled names like "Dr. Patel" that never appear in the transcript or summary.
+enum NameCheck {
+    static func ungroundedNames(in text: String, source: String) -> [String] {
+        let haystack = source.lowercased()
+        let words = text.split(whereSeparator: \.isWhitespace).map { $0.trimmingCharacters(in: .punctuationCharacters) }
+        var names: [String] = []
+        for (index, word) in words.enumerated() where index > 0 {
+            guard let first = word.first, first.isUppercase, word.count > 1,
+                  !commonCapitalized.contains(word.lowercased()) else { continue }
+            if !haystack.contains(word.lowercased()) { names.append(word) }
+        }
+        return names
+    }
+
+    /// Capitalized words that aren't names.
+    private static let commonCapitalized: Set<String> = [
+        "i", "dr", "mr", "mrs", "ms", "prof", "ai", "ceo", "q&a", "tv", "us", "uk", "eu",
+        "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+        "january", "february", "march", "april", "may", "june", "july", "august", "september",
+        "october", "november", "december"
+    ]
+}
+
 /// What the model writes for a finished session.
-@Generable
 struct SessionDigest {
+    var title: String
+    var definition: String
+    var summary: String
+}
+
+/// A session's name and one-line definition, read from its summary.
+@Generable
+struct SessionLabel {
     @Guide(description: "A specific two- or three-word title naming the main topic, like \"Pricing Page Redesign\"")
     var title: String
-    @Guide(description: "Two to four short paragraphs covering the recording from start to finish: the main topics and key points in order. Decisions or next steps only if someone stated them.")
-    var summary: String
+    @Guide(description: "One sentence of at most 20 words saying what kind of recording it is and what it covers, like \"A podcast conversation between a host and a guest about midlife and purpose\". Name a person only if the summary states their name.")
+    var definition: String
 }
 
 /// The summary alone, streamed as structured output so the model writes only the summary
@@ -107,6 +138,22 @@ final class SessionProcessor {
         for session in store.unprocessedSessions() {
             await process(session)
         }
+        // Definitions written before names were checked could name people who aren't in the
+        // session; clear them once so they're written again under the current rules.
+        let definitionsVersion = 2
+        if UserDefaults.standard.integer(forKey: "definitions.version") < definitionsVersion {
+            for session in store.sessions { session.definition = nil }
+            store.save()
+            UserDefaults.standard.set(definitionsVersion, forKey: "definitions.version")
+        }
+        // Sessions without a definition get one, read from their summary.
+        if let model = await resolver.preferred() {
+            for session in store.sessions where session.definition == nil && !inFlight.contains(session.id) {
+                guard let summary = session.summary, !summary.isEmpty else { continue }
+                session.definition = await groundedDefinition(forSummary: summary, source: summary + "\n" + session.transcriptText, model: model)
+                store.save()
+            }
+        }
         for session in store.sessions where session.isProcessed && session.sections.isEmpty && !inFlight.contains(session.id) {
             let lines = session.orderedLines
             guard let last = lines.last, last.offset >= Self.minimumSectionedLength else { continue }
@@ -134,6 +181,11 @@ final class SessionProcessor {
             if !session.hasCustomTitle, let title = Self.shortTitle(digest.title) {
                 session.title = title
             }
+            if !digest.definition.isEmpty {
+                session.definition = NameCheck.ungroundedNames(in: digest.definition, source: digest.summary + "\n" + session.transcriptText).isEmpty
+                    ? digest.definition
+                    : await groundedDefinition(forSummary: digest.summary, source: digest.summary + "\n" + session.transcriptText, model: await resolver.preferred())
+            }
             session.summary = digest.summary.trimmingCharacters(in: .whitespacesAndNewlines)
             session.isProcessed = true
             store.save()
@@ -148,17 +200,21 @@ final class SessionProcessor {
 
     // MARK: - Live notes
 
-    /// Starts collecting notes for a new recording.
-    func liveSessionStarted() {
+    /// Starts collecting notes for a new recording. A resumed session takes none: it's read
+    /// again in full when it ends, so its summary ties the old and new parts together.
+    func liveSessionStarted(takingNotes: Bool = true) {
         liveTask?.cancel()
         liveTask = nil
         live = LiveNotes()
+        isTakingNotes = takingNotes
     }
+
+    @ObservationIgnored private var isTakingNotes = true
 
     /// Called as the live transcript grows: once enough new talk has built up since the last
     /// notes, writes notes for it in the background.
     func liveTranscriptChanged(_ lines: [LiveLine]) {
-        guard liveTask == nil, lines.count > live.coveredLines else { return }
+        guard isTakingNotes, liveTask == nil, lines.count > live.coveredLines else { return }
         let pending = lines[live.coveredLines...].map { "\($0.speaker): \($0.text)" }.joined(separator: "\n")
         guard pending.count >= Self.livePartCharacters, let model = try? resolver.onDevice() else { return }
         let upTo = lines.count
@@ -175,8 +231,10 @@ final class SessionProcessor {
     /// Starts loading the model as a recording stops, so it's ready by the time the
     /// transcript is saved and the summary begins.
     func prepareForSummary() {
-        guard let model = try? resolver.onDevice() else { return }
-        LanguageModelSession(model: model.model, instructions: Self.summaryInstructions).prewarm()
+        Task { [resolver] in
+            guard let model = await resolver.preferred() else { return }
+            LanguageModelSession(model: model.model, instructions: Self.summaryInstructions).prewarm()
+        }
     }
 
     /// Ends the recording's notes, waiting for any in progress, and hands them over.
@@ -196,7 +254,7 @@ final class SessionProcessor {
     /// transcript (thinned evenly when long, so it fits the window).
     private func sections(for lines: [TranscriptLine]) async -> [SessionSection] {
         guard let last = lines.last, last.offset >= Self.minimumSectionedLength, lines.count >= 6,
-              let model = try? resolver.onDevice() else { return [] }
+              let model = await resolver.preferred(needsGuidedGeneration: true) else { return [] }
 
         let outline = lines.map { "[\(SessionSection.format($0.offset))] \($0.speaker): \($0.text.prefix(100))" }
         let maxCharacters = Int(Double(model.promptBudget) * 0.6 * model.charactersPerToken)
@@ -241,10 +299,9 @@ final class SessionProcessor {
 
     // MARK: - Chat titles
 
-    /// Names a new chat after its first exchange. Titles are short, so the on-device model is
-    /// used directly: it's fast and always available.
+    /// Names a new chat after its first exchange, with the chosen model.
     func titleChat(_ id: UUID, question: String, answer: String) async {
-        guard let model = try? resolver.onDevice() else { return }
+        guard let model = await resolver.preferred(needsGuidedGeneration: true) else { return }
         let session = LanguageModelSession(
             model: model.model,
             instructions: "You name conversations with short, specific titles."
@@ -347,9 +404,9 @@ final class SessionProcessor {
             }
         }
         summary = Self.trimmingTrailingSpeaker(summary, speakers: speakers)
-        // The title comes from the finished summary: a short read, so it takes a moment.
-        let title = (try? await self.title(forSummary: summary, model: model)) ?? ""
-        return SessionDigest(title: title, summary: summary)
+        // The title and definition come from the finished summary: a short read, so they take a moment.
+        let label = try? await self.label(forSummary: summary, model: model)
+        return SessionDigest(title: label?.title ?? "", definition: label?.definition ?? "", summary: summary)
     }
 
     /// Removes a speaker label the model left dangling at the end ("…next steps. You"), in case
@@ -370,13 +427,40 @@ final class SessionProcessor {
         return result
     }
 
-    private func title(forSummary summary: String, model: ResolvedModel) async throws -> String {
-        let prompt = "Title this session.\n\n\(summary.prefix(900))"
-        let session = LanguageModelSession(model: model.model, instructions: "You name recordings (meetings, calls, videos, podcasts) with short, specific titles.")
-        if model.supportsGuidedGeneration {
-            return try await session.respond(to: prompt, generating: ChatTitle.self).content.title
+    /// A definition that names no one who isn't in the session: written, checked against the
+    /// summary and transcript, and rewritten without names if it invented any. Nil if it still
+    /// can't be trusted (the list then shows the summary's first sentence instead).
+    private func groundedDefinition(forSummary summary: String, source: String, model: ResolvedModel?) async -> String? {
+        guard let model else { return nil }
+        if let label = try? await label(forSummary: summary, model: model),
+           !label.definition.isEmpty, NameCheck.ungroundedNames(in: label.definition, source: source).isEmpty {
+            return label.definition
         }
-        return try await session.respond(to: prompt + "\nReply with only the title.").content
+        if let label = try? await label(forSummary: summary, model: model, withoutNames: true),
+           !label.definition.isEmpty, NameCheck.ungroundedNames(in: label.definition, source: source).isEmpty {
+            return label.definition
+        }
+        return nil
+    }
+
+    private func label(forSummary summary: String, model: ResolvedModel, withoutNames: Bool = false) async throws -> SessionLabel {
+        let prompt = """
+            Title this recording and say in one sentence what kind of recording it is and what it \
+            covers.\(withoutNames ? " Don't name any person; describe people by role (a host, a guest, the speaker)." : "")
+
+            \(summary.prefix(1_200))
+            """
+        let session = LanguageModelSession(model: model.model, instructions: """
+            You name recordings (meetings, calls, videos, podcasts) with short, specific titles and \
+            one-line descriptions. Use only what the summary says. Never add a person's name, a \
+            title like "Dr.", a company or a place that the summary doesn't state.
+            """)
+        if model.supportsGuidedGeneration {
+            return try await session.respond(to: prompt, generating: SessionLabel.self).content
+        }
+        let reply = try await session.respond(to: prompt + "\nReply with the title on the first line and the sentence on the second.").content
+        let lines = reply.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        return SessionLabel(title: lines.first ?? "", definition: lines.dropFirst().joined(separator: " "))
     }
 
     /// Notes for text of any length: split into parts that fill the window, each turned into

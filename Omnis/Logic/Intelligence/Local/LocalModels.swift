@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// A model Omnis can download from Hugging Face and run on this Mac with MLX.
 struct LocalModelOption: Identifiable, Hashable {
@@ -59,10 +60,10 @@ final class LocalModelStore {
     private(set) var downloads: [String: DownloadState] = [:]
     @ObservationIgnored private var tasks: [String: Task<Void, Never>] = [:]
 
-    static let root: URL = URL.applicationSupportDirectory.appending(path: "Models", directoryHint: .isDirectory)
+    nonisolated static let root: URL = URL.applicationSupportDirectory.appending(path: "Models", directoryHint: .isDirectory)
 
     /// Written once every file is in place, so a half-finished download never counts as installed.
-    private static let completeMarker = ".omnis-complete"
+    nonisolated private static let completeMarker = ".omnis-complete"
 
     init() {
         installed = Set(LocalModelOption.all.filter { Self.isComplete($0) }.map(\.id))
@@ -112,7 +113,7 @@ final class LocalModelStore {
 
     /// What MLX needs: weights, configs, tokenizer and chat template. READMEs, images and
     /// evaluation files are skipped.
-    private static func isNeeded(_ path: String) -> Bool {
+    nonisolated private static func isNeeded(_ path: String) -> Bool {
         guard !path.contains("/") else { return false }
         return [".safetensors", ".json", ".jinja", ".txt"].contains { path.hasSuffix($0) }
     }
@@ -163,23 +164,43 @@ final class LocalModelStore {
         ])
     }
 
-    nonisolated private static func isComplete(_ model: LocalModelOption) -> Bool {
+    /// Whether every file of `model` is on disk.
+    nonisolated static func isComplete(_ model: LocalModelOption) -> Bool {
         FileManager.default.fileExists(atPath: model.directory.appending(path: completeMarker).path(percentEncoded: false))
     }
 }
 
-/// Reports bytes written for one file as it downloads.
-private final class ProgressDelegate: NSObject, URLSessionDownloadDelegate, Sendable {
+/// Reports bytes received for one file as it downloads. The async `download(from:delegate:)`
+/// doesn't deliver per-chunk write callbacks, so this watches the task's own progress, at most
+/// every few megabytes so a multi-gigabyte download doesn't flood the main actor.
+private final class ProgressDelegate: NSObject, URLSessionTaskDelegate, Sendable {
     let onWrite: @Sendable (Int64) -> Void
+    private let state = OSAllocatedUnfairLock<(observation: NSKeyValueObservation?, last: Int64)>(
+        uncheckedState: (nil, 0)
+    )
+    private static let step: Int64 = 4 * 1_048_576
 
     init(onWrite: @escaping @Sendable (Int64) -> Void) {
         self.onWrite = onWrite
     }
 
-    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64, totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
-        onWrite(totalBytesWritten)
+    func urlSession(_ session: URLSession, didCreateTask task: URLSessionTask) {
+        let observation = task.progress.observe(\.completedUnitCount) { [weak self] progress, _ in
+            self?.report(progress.completedUnitCount)
+        }
+        state.withLock { $0.observation = observation }
     }
 
-    // The async `download(from:delegate:)` call hands back the file itself.
-    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {}
+    private func report(_ received: Int64) {
+        let due = state.withLock { state in
+            guard received - state.last >= Self.step else { return false }
+            state.last = received
+            return true
+        }
+        if due { onWrite(received) }
+    }
+
+    deinit {
+        state.withLock { $0.observation?.invalidate() }
+    }
 }

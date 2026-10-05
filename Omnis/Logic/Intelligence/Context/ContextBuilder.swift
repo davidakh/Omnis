@@ -28,6 +28,11 @@ struct ContextBuilder {
     /// Search scores below these are treated as unrelated.
     private static let minimumScore = 0.25
     private static let minimumLiveScore = 0.4
+    /// Sessions listed (title, date, length, definition) for models that read passages.
+    private static let catalogSize = 6
+    /// Sessions listed for models that look things up themselves; the tools search exactly
+    /// these, by title or number.
+    static let lookupCatalogSize = 12
 
     private enum Share {
         static let history = 0.15
@@ -41,9 +46,10 @@ struct ContextBuilder {
         live: (startedAt: Date, lines: [LiveLine])?,
         screen: ScreenSnapshot?,
         screenNote: String?,
-        model: ResolvedModel
+        model: ResolvedModel,
+        canLookUp: Bool = false
     ) async -> AskContext {
-        let budget = model.promptBudget
+        let budget = model.answerBudget
         var remaining = budget - model.estimatedTokens(question) - 40
 
         // Earlier turns reach the model as real conversation turns (see `AskService`), not in
@@ -57,6 +63,11 @@ struct ContextBuilder {
             remaining -= model.estimatedTokens(liveBlock)
         }
 
+        // Every session up front as one line (title, date, length, what it is), so the model
+        // tells them apart and answers "what was it about" without reading anything more.
+        let catalogBlock = catalogText(index.recentSessions(limit: canLookUp ? Self.lookupCatalogSize : Self.catalogSize))
+        remaining -= model.estimatedTokens(catalogBlock)
+
         var screenBlock = ""
         if let screen {
             screenBlock = screenText(screen, tokens: Int(Double(budget) * Share.screen), model: model)
@@ -65,20 +76,24 @@ struct ContextBuilder {
             screenBlock = "On screen: unavailable. \(screenNote)"
         }
 
-        // Past sessions fill the rest. Weak matches are left out so unrelated sessions aren't
-        // cited; during a live session only strong matches come in, so the small on-device
-        // model doesn't blend past meetings into "this meeting".
-        let minimumScore = live == nil ? Self.minimumScore : Self.minimumLiveScore
+        // A model that looks things up starts from the list alone and searches for details, so
+        // its prompt stays small and the first words come fast. Others get the best-matching
+        // passages up front. Weak matches are left out so unrelated sessions aren't cited;
+        // during a live session only strong matches come in, so past meetings don't blend into
+        // "this meeting".
         var sessionBlocks: [String] = []
-        for hit in index.search(question, limit: live == nil ? 12 : 4) where hit.score >= minimumScore {
-            let block = hitText(hit)
-            let cost = model.estimatedTokens(block)
-            guard cost <= remaining else { continue }
-            sessionBlocks.append(block)
-            remaining -= cost
+        if !canLookUp {
+            let minimumScore = live == nil ? Self.minimumScore : Self.minimumLiveScore
+            for hit in index.search(question, limit: live == nil ? 12 : 4) where hit.score >= minimumScore {
+                let block = hitText(hit)
+                let cost = model.estimatedTokens(block)
+                guard cost <= remaining else { continue }
+                sessionBlocks.append(block)
+                remaining -= cost
+            }
         }
 
-        var prompt = render(question: question, live: liveBlock, screen: screenBlock, sessions: sessionBlocks)
+        var prompt = render(question: question, live: liveBlock, catalog: catalogBlock, screen: screenBlock, sessions: sessionBlocks, canLookUp: canLookUp)
 
         // The on-device window is small enough that estimates matter: count exactly and drop
         // the weakest session passages until the prompt fits.
@@ -87,12 +102,17 @@ struct ContextBuilder {
                   let count = try? await SystemLanguageModel.default.tokenCount(for: prompt),
                   count > budget {
                 sessionBlocks.removeLast()
-                prompt = render(question: question, live: liveBlock, screen: screenBlock, sessions: sessionBlocks)
+                prompt = render(question: question, live: liveBlock, catalog: catalogBlock, screen: screenBlock, sessions: sessionBlocks, canLookUp: canLookUp)
             }
         }
 
         return AskContext(
-            instructions: instructions(isLive: live != nil, hasScreen: screen != nil),
+            instructions: instructions(
+                isLive: live != nil,
+                hasScreen: screen != nil,
+                screenMissing: screen == nil && screenNote != nil,
+                canLookUp: canLookUp
+            ),
             prompt: prompt,
             image: model.supportsVision ? screen?.image : nil
         )
@@ -100,14 +120,26 @@ struct ContextBuilder {
 
     // MARK: - Pieces
 
-    private func instructions(isLive: Bool, hasScreen: Bool) -> String {
+    private func instructions(isLive: Bool, hasScreen: Bool, screenMissing: Bool, canLookUp: Bool) -> String {
         var text = """
         You are Omnis, an assistant on the user's Mac. Use what's relevant: the user's recorded \
         sessions, earlier in this conversation, and their screen when included. Lines labeled \
-        "You" are the user. Mention a session only when you use one given below, by its title and \
-        date; never make one up, and never label something from this conversation as a session. \
-        If they ask about their sessions and the context doesn't say, \
-        tell them you couldn't find it; otherwise answer from what you know. Be concise.
+        "You" are the user.
+
+        Rules for anything about the user's sessions (who was there, what was said, names, \
+        numbers, decisions):
+        - State only what a transcript excerpt or summary you were given actually says. Never \
+        fill a gap with a likely-sounding name, person, quote or detail.
+        - Session titles and the one-line descriptions in the list are written automatically \
+        and can be wrong. Use them only to tell sessions apart, never as the source of a name \
+        or fact.
+        - Each excerpt says which session it's from. Never apply something from one session to \
+        another.
+        - If what you were given doesn't answer the question, say so plainly, for example "I \
+        couldn't find the guest's name in that session." That is a good answer; a guess is not.
+        General questions that aren't about their sessions or screen you may answer from general \
+        knowledge, and say so when unsure. Be concise: a few sentences or a short list, unless \
+        they ask for more.
         """
         if isLive {
             text += """
@@ -123,18 +155,42 @@ struct ContextBuilder {
             session title or date.
             """
         }
+        if canLookUp {
+            text += """
+
+            The numbered list below has the user's recent sessions, newest first (number 1 is \
+            the latest). A question that doesn't name a session ("the guest", "the host", "the \
+            meeting") is about number 1. The list is enough for which sessions exist, when, and \
+            roughly what each covers; anything more (names, who said what, details) needs a \
+            lookup first: call searchTranscript with the session's number and two to five \
+            keywords likely to have been said (a name, a topic, or "welcome guest joining today" \
+            to find who was on), or readSummary for an overview. After one or two lookups, answer \
+            from what they returned, quoting with the time it was said. If they didn't contain \
+            the answer, say you couldn't find it in that session; don't guess. Never ask the user \
+            which session they mean.
+            """
+        }
+        if screenMissing {
+            text += """
+             The user's screen could not be included this time; "On screen" says why. You can't \
+            see it, so if they ask about it, tell them that and why, and don't describe or guess \
+            what's on it.
+            """
+        }
         return text
     }
 
-    private func render(question: String, live: String, screen: String, sessions: [String]) -> String {
+    private func render(question: String, live: String, catalog: String, screen: String, sessions: [String], canLookUp: Bool) -> String {
         var parts: [String] = []
         if !live.isEmpty { parts.append(live) }
+        if !catalog.isEmpty { parts.append(catalog) }
         if !screen.isEmpty { parts.append(screen) }
         if !sessions.isEmpty { parts.append("Past sessions:\n\n" + sessions.joined(separator: "\n\n")) }
 
-        var prompt = parts.isEmpty
-            ? """
-            Nothing in the user's recorded sessions matches this. If they're asking what someone \
+        // The catalog alone isn't a match: without passages, there's nothing on what was said.
+        var prompt = !canLookUp && sessions.isEmpty && live.isEmpty && screen.isEmpty
+            ? (catalog.isEmpty ? "" : catalog + "\n\n") + """
+            No passage from the user's recorded sessions matches this. If they're asking what someone \
             said or decided in a meeting or call, say you couldn't find it in their sessions; \
             don't guess.
 
@@ -142,6 +198,13 @@ struct ContextBuilder {
             : parts.joined(separator: "\n\n---\n\n") + "\n"
         prompt += "\nQuestion: \(question)"
         return prompt
+    }
+
+    /// The newest sessions, numbered newest first, each with what it is.
+    private func catalogText(_ sessions: [Session]) -> String {
+        guard !sessions.isEmpty else { return "The user has no recorded sessions yet." }
+        let lines = sessions.enumerated().map { SessionCatalog.line($0.offset + 1, $0.element) }
+        return "The user's sessions, newest first (titles are automatic labels):\n" + lines.joined(separator: "\n")
     }
 
     /// For budgeting only: roughly what the earlier turns cost.
@@ -171,9 +234,21 @@ struct ContextBuilder {
 
     private func screenText(_ screen: ScreenSnapshot, tokens: Int, model: ResolvedModel) -> String {
         let title = screen.windowTitle.map { ", \"\($0)\"" } ?? ""
-        let header = "On screen, \(screen.appName)\(title):"
-        let text = screen.text.isEmpty ? "(No readable text.)" : fit(screen.text, tokens: tokens, model: model)
-        return header + "\n" + text
+        var parts = ["On screen, \(screen.appName)\(title):"]
+        if let description = screen.visualDescription, !description.isEmpty {
+            parts.append("What it looks like: \(description)")
+        }
+        if !screen.labels.isEmpty {
+            parts.append("Shows: \(screen.labels.joined(separator: ", "))")
+        }
+        if !screen.codes.isEmpty {
+            parts.append("QR codes and barcodes: \(screen.codes.joined(separator: "; "))")
+        }
+        // Rows in reading order; " | " separates columns and table cells.
+        parts.append(screen.text.isEmpty
+            ? "Text: (none readable)"
+            : "Text (rows in reading order, \" | \" between columns):\n" + fit(screen.text, tokens: tokens, model: model))
+        return parts.joined(separator: "\n")
     }
 
     private func hitText(_ hit: SearchHit) -> String {

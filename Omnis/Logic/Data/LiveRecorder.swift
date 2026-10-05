@@ -40,9 +40,13 @@ final class LiveRecorder {
     /// Finished lines followed by the ones still in progress: what has been said so far.
     var transcriptSoFar: [LiveLine] { lines + partials }
 
-    func start() {
-        startedAt = .now
-        lines = []
+    /// Starts recording. Resuming a session continues its transcript: `lines` are what was
+    /// already said, and new lines are timed from `offset` (where the session left off). The
+    /// start is set back by `offset`, so every time measured from it (new lines, audio, chats)
+    /// lands on the session's timeline.
+    func start(continuing lines: [LiveLine] = [], from offset: TimeInterval = 0) {
+        startedAt = Date.now.addingTimeInterval(-offset)
+        self.lines = lines
         partials = []
         isPaused = false
         status = nil

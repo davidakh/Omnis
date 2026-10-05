@@ -65,7 +65,7 @@ struct AnswerView: View {
     private var bottomBar: some View {
         HStack(alignment: .bottom, spacing: 6) {
             if isAnswering {
-                SurfaceButton("square.and.arrow.up") {}
+                SurfaceShareButton(item: thread.shareText, subject: thread.displayTitle)
                     .transition(.blurReplace)
                 Spacer(minLength: 0)
                 SurfaceOrb(animation: thinkingOrb, diameter: 52)
@@ -191,8 +191,18 @@ struct AnswerView: View {
 
             // Only under the latest answer, once it has finished.
             if turn.id == turns.last?.id, !turn.isStreaming {
-                FeedbackButton(question: turn.question, answer: turn.answer)
-                    .transition(.opacity)
+                HStack(spacing: 8) {
+                    FeedbackButton(question: turn.question, answer: turn.answer)
+                    Spacer(minLength: 0)
+                    // How long it took and how fast it was written: "30s - 15tk/s".
+                    if let stats = Self.stats(for: turn) {
+                        Text(stats)
+                            .font(.subheadline)
+                            .foregroundStyle(.tertiary)
+                            .monospacedDigit()
+                    }
+                }
+                .transition(.opacity)
             }
         }
     }
@@ -234,6 +244,15 @@ struct AnswerView: View {
         }
         .animation(SurfaceMotion.content, value: turn.suggestions.map(\.id))
         .animation(SurfaceMotion.content, value: turn.isStreaming)
+    }
+
+    /// "30s - 15tk/s", or just the time when the model doesn't report tokens.
+    private static func stats(for turn: AnswerThread.Turn) -> String? {
+        guard let duration = turn.duration, !turn.failed else { return nil }
+        let seconds = Int(duration.rounded())
+        let time = seconds < 60 ? "\(max(seconds, 1))s" : "\(seconds / 60)m \(seconds % 60)s"
+        guard let speed = turn.tokensPerSecond else { return time }
+        return "\(time) - \(Int(speed.rounded()))tk/s"
     }
 
     /// Scroll target that keeps the newest suggestion in view.

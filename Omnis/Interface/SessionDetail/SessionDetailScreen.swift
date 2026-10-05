@@ -68,7 +68,8 @@ struct SessionDetailScreen: View {
                     )
                     .zIndex(1)  // the lifted pill floats above the neighbouring buttons
                     Spacer(minLength: 0)
-                    SurfaceButton("play.fill", style: .prominent) { state.startSession(compact: false) }
+                    // Continues this session rather than starting a new one.
+                    SurfaceButton("play.fill", style: .prominent) { state.resumeSession(session, compact: false) }
                 }
                 .frame(height: 32)
             }
@@ -98,7 +99,7 @@ struct SessionCompactBar: View {
                 }
                 .lineLimit(1)
                 .frame(maxWidth: .infinity)
-                SurfaceButton("play.fill", style: .prominent) { state.startSession(compact: false) }
+                SurfaceButton("play.fill", style: .prominent) { state.resumeSession(session, compact: false) }
             }
             .padding(.horizontal, 18)
             .padding(.vertical, 20)

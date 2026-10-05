@@ -1,3 +1,4 @@
+import FoundationModels
 import SwiftUI
 
 /// Drives which screen the surface shows, and owns the data and intelligence services behind
@@ -11,6 +12,8 @@ final class AppState {
         case answer(AnswerThread), answerCompact(AnswerThread), liveAsk, liveAnswer(AnswerThread)
         /// Settings, opened from any more menu; remembers the screen to return to.
         indirect case settings(Mode)
+        /// Downloading a model, before Omnis can be used.
+        case modelSetup
     }
     enum SessionsTab { case sessions, conversations }
     enum DetailTab { case summary, transcript, chats }
@@ -41,6 +44,10 @@ final class AppState {
     @ObservationIgnored private var recordingFolder: String?
     /// The questions asked during the session being recorded, saved with it.
     @ObservationIgnored private var liveChats: [SessionChat] = []
+    /// The saved session being continued, when the recording resumes one.
+    @ObservationIgnored private(set) var resumingSession: Session?
+    /// Downloaded models (Bonsai), which answer chats and write summaries.
+    let models = LocalModelStore()
     let resolver: ModelResolver
     let index: SessionIndex
     let ask: AskService
@@ -56,6 +63,21 @@ final class AppState {
         index = SessionIndex(store: store)
         ask = AskService(resolver: resolver, builder: ContextBuilder(index: index), settings: settings)
         processor = SessionProcessor(store: store, index: index, resolver: resolver)
+        // Omnis runs on a downloaded model, so one has to be here before anything else.
+        if let chosen = settings.localModel, models.isInstalled(chosen) {
+            // Ready.
+        } else if let installed = LocalModelOption.all.first(where: models.isInstalled) {
+            // Downloaded but never chosen (e.g. setup was quit just as it finished): use it.
+            settings.localModelID = installed.id
+            settings.provider = .local
+        } else {
+            mode = .modelSetup
+        }
+
+        // Load the downloaded model now, off the main thread, so the first question doesn't
+        // wait on reading its weights and compiling its GPU kernels.
+        warmUpLocalModel()
+
         // Notes for the summary are written as the session records, so it's ready soon after.
         recorder.onLinesChanged = { [processor] lines in processor.liveTranscriptChanged(lines) }
 
@@ -89,7 +111,7 @@ final class AppState {
     }
     /// Matches for the current query and tab, best first; nil shows everything.
     private(set) var filteredItems: [Session]?
-    /// The on-device model is still matching by meaning; the list shows instant matches meanwhile.
+    /// The model is still matching by meaning; the list shows instant matches meanwhile.
     private(set) var isRefiningFilter = false
     @ObservationIgnored private var filterTask: Task<Void, Never>?
 
@@ -122,8 +144,9 @@ final class AppState {
         let all = tab == .sessions ? store.sessions : store.chats
         filteredItems = index.filter(all, matching: query)
         isRefiningFilter = true
-        filterTask = Task { [weak self, index] in
-            let refined = await index.refine(all, matching: query)
+        filterTask = Task { [weak self, index, resolver] in
+            let model = await resolver.preferred(needsGuidedGeneration: true)?.model
+            let refined = await index.refine(all, matching: query, using: model)
             guard let self, !Task.isCancelled else { return }
             // Only if nothing changed while the model was reading.
             guard self.isFiltering, self.sessionsTab == tab,
@@ -191,15 +214,35 @@ final class AppState {
     /// Starts recording: the orb morphs to its square. Opens in the live layout matching
     /// the height of the screen the play button was on.
     func startSession(compact: Bool) {
+        begin(resuming: nil, compact: compact)
+    }
+
+    /// Continues a saved session: the live transcript starts with what was already said, new
+    /// lines and audio pick up where it left off, and when it ends the whole session (old and
+    /// new) is summarized, sectioned and indexed again as one.
+    func resumeSession(_ session: Session, compact: Bool) {
+        begin(resuming: session, compact: compact)
+    }
+
+    private func begin(resuming session: Session?, compact: Bool) {
         isPaused = false
-        recorder.start()
-        let folder = AudioStorage.makeFolder()
+        resumingSession = session
+        let folder: String
+        if let session {
+            let earlier = session.orderedLines.map { LiveLine(speaker: $0.speaker, text: $0.text, offset: $0.offset) }
+            recorder.start(continuing: earlier, from: session.length)
+            // Kept inside the session's first recording folder, so deleting the session takes it too.
+            folder = session.audioFolder.map(AudioStorage.makeFolder(inside:)) ?? AudioStorage.makeFolder()
+        } else {
+            recorder.start()
+            folder = AudioStorage.makeFolder()
+        }
         recordingFolder = folder
         liveChats = []
         transcriber.setSource(.microphone, on: settings.useMicrophone)
         transcriber.setSource(.system, on: settings.useSystemAudio)
         transcriber.start(recordingTo: AudioStorage.url(for: folder))
-        processor.liveSessionStarted()
+        processor.liveSessionStarted(takingNotes: session == nil)
         setOrbShape(.square)
         mode = compact ? .liveCompact : .live
     }
@@ -259,6 +302,26 @@ final class AppState {
         recordingFolder = nil
         let chats = liveChats
         liveChats = []
+        if let session = resumingSession {
+            resumingSession = nil
+            let earlier = session.lines.count
+            guard let recording = recorder.stop(), recording.lines.count > earlier else {
+                // Nothing new was said: the session stays as it was.
+                if let folder { AudioStorage.delete(folder) }
+                return
+            }
+            store.saveResumed(
+                session,
+                lines: recording.lines,
+                audioFolder: folder,
+                length: Date.now.timeIntervalSince(recording.startedAt),
+                chats: chats
+            )
+            index.invalidate()
+            // Read again in full (no live notes), so the summary covers the whole session.
+            Task { [processor] in await processor.process(session) }
+            return
+        }
         guard let recording = recorder.stop(), !recording.lines.isEmpty else {
             // Nothing was said, so nothing is saved, audio included.
             if let folder { AudioStorage.delete(folder) }
@@ -328,6 +391,20 @@ final class AppState {
         NSApplication.shared.terminate(nil)
     }
 
+    /// Answers with a downloaded model from now on, and leaves setup if that's where it was.
+    func useDownloadedModel(_ model: LocalModelOption) {
+        settings.localModelID = model.id
+        settings.provider = .local
+        if mode == .modelSetup { mode = .compact }
+        warmUpLocalModel()
+    }
+
+    /// Loads the chosen downloaded model in the background and primes a session with it.
+    private func warmUpLocalModel() {
+        guard settings.provider == .local, let model = try? resolver.local() else { return }
+        LanguageModelSession(model: model.model).prewarm()
+    }
+
     func openSettings() {
         if case .settings = mode { return }
         mode = .settings(mode)
@@ -345,6 +422,11 @@ final class AppState {
 
     /// Opens a thread answering `question`, from the main ask or during a live session.
     func openAnswer(_ question: String, live: Bool) {
+        // "Start a session" from the main ask starts one rather than asking the model.
+        if !live, !recorder.isRecording, SessionCommand.isStartRequest(question) {
+            startSession(compact: false)
+            return
+        }
         let thread = AnswerThread(state: self, question: question, isLive: live)
         mode = live ? .liveAnswer(thread) : .answer(thread)
     }

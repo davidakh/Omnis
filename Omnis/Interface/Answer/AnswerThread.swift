@@ -24,6 +24,11 @@ final class AnswerThread: Hashable {
         /// Auto answer: instead of one answer, a suggested reply each time the others are
         /// waiting on the user, until stopped.
         var isAuto = false
+        /// When it was asked, and how long the answer took once it was done.
+        let askedAt = Date.now
+        var duration: TimeInterval?
+        /// How fast the model wrote the answer, when it reports its token count.
+        var tokensPerSecond: Double?
         var suggestions: [Suggestion] = []
     }
 
@@ -98,7 +103,23 @@ final class AnswerThread: Hashable {
         return title ?? turns.first?.question ?? ""
     }
 
+    /// The conversation as plain text for sharing: each question, then its answer.
+    var shareText: String {
+        turns
+            .filter { !$0.answer.isEmpty || !$0.suggestions.isEmpty }
+            .map { turn in
+                let answer = turn.answer.isEmpty ? turn.suggestions.map(\.text).joined(separator: "\n\n") : turn.answer
+                return "\(String(localized: "You")): \(turn.question)\n\nOmnis: \(answer)"
+            }
+            .joined(separator: "\n\n")
+    }
+
     func ask(_ question: String) {
+        // Asking a chat to start a session starts one (leaving the chat, which stays saved).
+        if !isLive, !state.recorder.isRecording, SessionCommand.isStartRequest(question) {
+            state.startSession(compact: false)
+            return
+        }
         // "What should I say next?" during a session: keep answering until stopped.
         if isLive, AutoAnswerer.isRequest(question) {
             startAutoAnswer(question)
@@ -122,6 +143,8 @@ final class AnswerThread: Hashable {
                         turns[index].screenNotice = reason
                     case .screenIncluded(let source):
                         turns[index].screenSource = source
+                    case .speed(let tokensPerSecond):
+                        turns[index].tokensPerSecond = tokensPerSecond
                     case .text(let text):
                         if turns[index].answer.isEmpty {
                             withAnimation(SurfaceMotion.content) { turns[index].answer = text }
@@ -201,6 +224,7 @@ final class AnswerThread: Hashable {
     }
 
     private func finish(_ index: Int) {
+        turns[index].duration = Date.now.timeIntervalSince(turns[index].askedAt)
         withAnimation(SurfaceMotion.content) { turns[index].isStreaming = false }
         let turn = turns[index]
         if isLive, !turn.failed, !turn.answer.isEmpty {

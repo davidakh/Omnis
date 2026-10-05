@@ -15,13 +15,13 @@ struct SettingsScreen: View {
     private static var size: CGSize { CGSize(width: 620, height: 712) }
     private static var sidebarWidth: CGFloat { 180 }
 
-    /// While true, only a "coming soon" prompt is shown in place of the panes.
+    /// While true, settings is left blank; pulling down still closes it.
     private static var isLocked: Bool { true }
 
     var body: some View {
         Group {
             if Self.isLocked {
-                ComingSoonPrompt { state.closeSettings() }
+                Color.clear
             } else {
                 HStack(spacing: 0) {
                     if showsSidebar {
@@ -97,7 +97,7 @@ struct SettingsScreen: View {
         case .general:
             LaunchAtLoginRow()
         case .intelligence:
-            ModelSettingsSection(settings: state.settings, resolver: state.resolver)
+            ModelSettingsSection(settings: state.settings, resolver: state.resolver, state: state)
         case .connect, .privacy, .shortcuts, .behavior, .storage, .backup, .about:
             SettingsNote("Nothing to set here yet.")
         }
@@ -219,6 +219,7 @@ private struct LaunchAtLoginRow: View {
 private struct ModelSettingsSection: View {
     @Bindable var settings: ModelSettings
     let resolver: ModelResolver
+    let state: AppState
 
     /// Bumped when an API key is saved, so the rows' statuses (read from the Keychain) refresh.
     @State private var keysVersion = 0
@@ -260,6 +261,25 @@ private struct ModelSettingsSection: View {
     @ViewBuilder
     private var providerOptions: some View {
         switch settings.provider {
+        case .local:
+            VStack(alignment: .leading, spacing: 12) {
+                ForEach(LocalModelOption.all) { model in
+                    LocalModelRow(
+                        model: model,
+                        state: state.models.state(of: model),
+                        isInstalled: state.models.isInstalled(model),
+                        isSelected: settings.localModelID == model.id
+                    ) {
+                        state.models.download(model)
+                    } cancel: {
+                        state.models.cancel(model)
+                    } use: {
+                        state.useDownloadedModel(model)
+                    }
+                }
+                SettingsNote("Answers chats and writes summaries on this Mac with a model downloaded from Hugging Face. Live notes and highlights use Apple's on-device model. Nothing leaves your device.")
+            }
+            .transition(.blurReplace)
         case .appleOnDevice, .applePrivateCloud:
             VStack(alignment: .leading, spacing: 10) {
                 SettingsField("Runs On") {
@@ -398,10 +418,11 @@ private extension View {
 /// The agents offered in Settings. Apple covers both Foundation Models variants; which one runs
 /// is chosen under the list.
 private enum Agent: CaseIterable, Hashable {
-    case apple, claude, chatGPT
+    case bonsai, apple, claude, chatGPT
 
     init(_ provider: ModelProvider) {
         switch provider {
+        case .local: self = .bonsai
         case .appleOnDevice, .applePrivateCloud: self = .apple
         case .anthropic: self = .claude
         case .openAI: self = .chatGPT
@@ -411,6 +432,7 @@ private enum Agent: CaseIterable, Hashable {
     /// The provider choosing this agent selects; Apple keeps the current variant if it's one.
     func provider(current: ModelProvider) -> ModelProvider {
         switch self {
+        case .bonsai: .local
         case .apple: Agent(current) == .apple ? current : .appleOnDevice
         case .claude: .anthropic
         case .chatGPT: .openAI
@@ -419,6 +441,7 @@ private enum Agent: CaseIterable, Hashable {
 
     var name: LocalizedStringKey {
         switch self {
+        case .bonsai: "Bonsai"
         case .apple: "Apple Foundation Model"
         case .claude: "Claude"
         case .chatGPT: "ChatGPT"
@@ -427,6 +450,7 @@ private enum Agent: CaseIterable, Hashable {
 
     var maker: String {
         switch self {
+        case .bonsai: String(localized: "Prism ML · on this Mac")
         case .apple: String(localized: "Apple")
         case .claude: String(localized: "Anthropic")
         case .chatGPT: String(localized: "OpenAI")
@@ -435,6 +459,7 @@ private enum Agent: CaseIterable, Hashable {
 
     var symbol: SettingsSymbol {
         switch self {
+        case .bonsai: .custom("Bonsai")
         case .apple: .custom("foundation.model")
         case .claude: .custom("claude")
         case .chatGPT: .custom("chatgpt")
@@ -443,6 +468,7 @@ private enum Agent: CaseIterable, Hashable {
 
     var color: AnyShapeStyle {
         switch self {
+        case .bonsai: AnyShapeStyle(Color(red: 0.36, green: 0.55, blue: 0.38))  // bonsai green
         case .apple: SettingsIcon.foundationModel
         case .claude: AnyShapeStyle(Color(red: 0.85, green: 0.47, blue: 0.34))  // Claude's terracotta
         case .chatGPT: AnyShapeStyle(Color(white: 0.12))
@@ -511,34 +537,6 @@ private struct AgentRow: View {
         .onTapGesture(perform: select)
         .animation(.smooth(duration: 0.15), value: isHovered)
         .animation(.smooth(duration: 0.2), value: isSelected)
-    }
-}
-
-/// Shown over the locked settings: a back button, a lock, and word that settings are coming soon.
-private struct ComingSoonPrompt: View {
-    let close: () -> Void
-
-    var body: some View {
-        ZStack(alignment: .topLeading) {
-            VStack(spacing: 12) {
-                SettingsIcon(symbol: .system("lock.fill"), color: SettingsIcon.gray)
-                    .scaleEffect(1.6)
-                    .padding(.bottom, 6)
-                Text("Settings Are Coming Soon")
-                    .font(.system(size: 17, weight: .semibold))
-                    .foregroundStyle(.white)
-                Text("You'll be able to customize Omnis here in a future update.")
-                    .font(.system(size: 13))
-                    .foregroundStyle(.white.opacity(0.6))
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: 280)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-            SurfaceButton("chevron.left", action: close)
-                .padding(20)
-        }
     }
 }
 

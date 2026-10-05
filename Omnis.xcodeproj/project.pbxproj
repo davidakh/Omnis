@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		405F9DAE30719A78008979B8 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 405F9DAD30719A78008979B8 /* Sparkle */; };
+		405F9DB030719A78008979B8 /* OmnisModels in Frameworks */ = {isa = PBXBuildFile; productRef = 405F9DB230719A78008979B8 /* OmnisModels */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -27,6 +28,7 @@
 			isa = PBXFrameworksBuildPhase;
 			files = (
 				405F9DAE30719A78008979B8 /* Sparkle in Frameworks */,
+				405F9DB030719A78008979B8 /* OmnisModels in Frameworks */,
 			);
 		};
 /* End PBXFrameworksBuildPhase section */
@@ -67,6 +69,7 @@
 			name = Omnis;
 			packageProductDependencies = (
 				405F9DAD30719A78008979B8 /* Sparkle */,
+				405F9DB230719A78008979B8 /* OmnisModels */,
 			);
 			productName = Omnis;
 			productReference = 405F9D16306FF5E8008979B8 /* Omnis.app */;
@@ -98,6 +101,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				405F9DAC30719A78008979B8 /* XCRemoteSwiftPackageReference "Sparkle" */,
+				405F9DB130719A78008979B8 /* XCLocalSwiftPackageReference "Packages/OmnisModels" */,
 			);
 			preferredProjectObjectVersion = 100;
 			productRefGroup = 405F9D17306FF5E8008979B8 /* Products */;
@@ -342,6 +346,13 @@
 		};
 /* End XCConfigurationList section */
 
+/* Begin XCLocalSwiftPackageReference section */
+		405F9DB130719A78008979B8 /* XCLocalSwiftPackageReference "Packages/OmnisModels" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Packages/OmnisModels;
+		};
+/* End XCLocalSwiftPackageReference section */
+
 /* Begin XCRemoteSwiftPackageReference section */
 		405F9DAC30719A78008979B8 /* XCRemoteSwiftPackageReference "Sparkle" */ = {
 			isa = XCRemoteSwiftPackageReference;
@@ -358,6 +369,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 405F9DAC30719A78008979B8 /* XCRemoteSwiftPackageReference "Sparkle" */;
 			productName = Sparkle;
+		};
+		405F9DB230719A78008979B8 /* OmnisModels */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 405F9DB130719A78008979B8 /* XCLocalSwiftPackageReference "Packages/OmnisModels" */;
+			productName = OmnisModels;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
