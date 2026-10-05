@@ -12,7 +12,10 @@ struct RootView: View {
             onExpand: expandAction,
             onBack: backAction,
             // No grabber on the main compact bar or the live session bars.
-            showsGrabber: ![.compact, .live, .liveCompact, .liveAsk, .modelSetup].contains(state.mode)
+            showsGrabber: ![.compact, .live, .liveCompact, .liveAsk, .modelSetup].contains(state.mode),
+            onQuit: { state.quit() },
+            onMinimize: minimizeAction,
+            onMaximize: maximizeAction
         ) {
             switch state.mode {
             case .compact: HomeBar(state: state)
@@ -66,6 +69,46 @@ struct RootView: View {
         case .answer(let thread), .answerCompact(let thread):
             thread.isResumed ? { state.closeAnswer() } : nil
         case .compact, .expanded, .live, .liveCompact, .liveTranscript, .liveAsk, .liveAnswer, .settings, .modelSetup: nil
+        }
+    }
+
+    /// Window controls: the current screen's compact bar, or nil when it's already showing.
+    private var minimizeAction: (() -> Void)? {
+        switch state.mode {
+        case .expanded: { state.mode = .compact }
+        case .sessions: { state.mode = .sessionsCompact }
+        case .session(let session): { state.mode = .sessionCompact(session) }
+        case .answer(let thread): { state.mode = .answerCompact(thread) }
+        case .live, .liveTranscript, .liveAsk, .liveAnswer: { state.mode = .liveCompact }
+        case .settings: {
+            state.closeSettings()
+            state.mode = Self.compactForm(of: state.mode) ?? state.mode
+        }
+        case .compact, .sessionsCompact, .sessionCompact, .answerCompact, .liveCompact, .modelSetup: nil
+        }
+    }
+
+    /// Window controls: the current screen's full view, or nil when it's already showing.
+    private var maximizeAction: (() -> Void)? {
+        switch state.mode {
+        case .compact: { state.mode = .expanded }
+        case .sessionsCompact: { state.mode = .sessions }
+        case .sessionCompact(let session): { state.mode = .session(session) }
+        case .answerCompact(let thread): { state.mode = .answer(thread) }
+        case .liveCompact: { state.mode = .live }
+        case .expanded, .sessions, .session, .answer, .live, .liveTranscript, .liveAsk, .liveAnswer, .settings, .modelSetup: nil
+        }
+    }
+
+    /// The compact bar for a full screen, for leaving settings straight to it.
+    private static func compactForm(of mode: AppState.Mode) -> AppState.Mode? {
+        switch mode {
+        case .expanded: .compact
+        case .sessions: .sessionsCompact
+        case .session(let session): .sessionCompact(session)
+        case .answer(let thread): .answerCompact(thread)
+        case .live, .liveTranscript, .liveAsk, .liveAnswer: .liveCompact
+        default: nil
         }
     }
 

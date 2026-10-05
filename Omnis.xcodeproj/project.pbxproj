@@ -7,7 +7,6 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		405F9DAE30719A78008979B8 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 405F9DAD30719A78008979B8 /* Sparkle */; };
 		405F9DB030719A78008979B8 /* OmnisModels in Frameworks */ = {isa = PBXBuildFile; productRef = 405F9DB230719A78008979B8 /* OmnisModels */; };
 /* End PBXBuildFile section */
 
@@ -27,7 +26,6 @@
 		405F9D13306FF5E8008979B8 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			files = (
-				405F9DAE30719A78008979B8 /* Sparkle in Frameworks */,
 				405F9DB030719A78008979B8 /* OmnisModels in Frameworks */,
 			);
 		};
@@ -68,7 +66,6 @@
 			);
 			name = Omnis;
 			packageProductDependencies = (
-				405F9DAD30719A78008979B8 /* Sparkle */,
 				405F9DB230719A78008979B8 /* OmnisModels */,
 			);
 			productName = Omnis;
@@ -100,7 +97,6 @@
 			mainGroup = 405F9D0D306FF5E8008979B8;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				405F9DAC30719A78008979B8 /* XCRemoteSwiftPackageReference "Sparkle" */,
 				405F9DB130719A78008979B8 /* XCLocalSwiftPackageReference "Packages/OmnisModels" */,
 			);
 			preferredProjectObjectVersion = 100;
@@ -267,6 +263,7 @@
 				ENABLE_RESOURCE_ACCESS_AUDIO_INPUT = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = Omnis;
 				INFOPLIST_KEY_LSUIElement = YES;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Omnis transcribes your side of the conversation while you record a session.";
@@ -304,6 +301,7 @@
 				ENABLE_RESOURCE_ACCESS_AUDIO_INPUT = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = Omnis;
 				INFOPLIST_KEY_LSUIElement = YES;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Omnis transcribes your side of the conversation while you record a session.";
@@ -353,23 +351,7 @@
 		};
 /* End XCLocalSwiftPackageReference section */
 
-/* Begin XCRemoteSwiftPackageReference section */
-		405F9DAC30719A78008979B8 /* XCRemoteSwiftPackageReference "Sparkle" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/sparkle-project/Sparkle";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 2.10.0;
-			};
-		};
-/* End XCRemoteSwiftPackageReference section */
-
 /* Begin XCSwiftPackageProductDependency section */
-		405F9DAD30719A78008979B8 /* Sparkle */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 405F9DAC30719A78008979B8 /* XCRemoteSwiftPackageReference "Sparkle" */;
-			productName = Sparkle;
-		};
 		405F9DB230719A78008979B8 /* OmnisModels */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = 405F9DB130719A78008979B8 /* XCLocalSwiftPackageReference "Packages/OmnisModels" */;

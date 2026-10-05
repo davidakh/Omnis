@@ -4,6 +4,10 @@ import SwiftUI
 @Observable
 final class SurfaceState {
     var isPresented = false
+    /// The pointer is over the glass or the window controls above it, so the controls show.
+    var isHovering = false
+    /// The window controls' frame in panel coordinates, so the presenter lets clicks reach them.
+    @ObservationIgnored var controlsFrame: CGRect = .zero
 
     /// The glass's current frame in panel (SwiftUI, top-left origin) coordinates.
     @ObservationIgnored var glassFrame: CGRect = .zero {
@@ -84,6 +88,11 @@ struct SurfaceHost<Content: View>: View {
     var onExpand: (() -> Void)?
     var onBack: (() -> Void)?
     var showsGrabber: Bool
+    /// Window controls above the surface: quit, and the current screen's smallest and largest
+    /// sizes (nil when it's already there). No controls when `onQuit` is nil.
+    var onQuit: (() -> Void)?
+    var onMinimize: (() -> Void)?
+    var onMaximize: (() -> Void)?
     @ViewBuilder let content: () -> Content
 
     @Environment(SurfaceState.self) private var surface: SurfaceState?
@@ -108,6 +117,9 @@ struct SurfaceHost<Content: View>: View {
         onExpand: (() -> Void)? = nil,
         onBack: (() -> Void)? = nil,
         showsGrabber: Bool = false,
+        onQuit: (() -> Void)? = nil,
+        onMinimize: (() -> Void)? = nil,
+        onMaximize: (() -> Void)? = nil,
         @ViewBuilder content: @escaping () -> Content
     ) {
         self.id = id
@@ -115,8 +127,13 @@ struct SurfaceHost<Content: View>: View {
         self.onExpand = onExpand
         self.onBack = onBack
         self.showsGrabber = showsGrabber
+        self.onQuit = onQuit
+        self.onMinimize = onMinimize
+        self.onMaximize = onMaximize
         self.content = content
     }
+
+    private var showsControls: Bool { onQuit != nil && isPresented && (surface?.isHovering ?? false) }
 
     private var isPresented: Bool { surface?.isPresented ?? true }
 
@@ -174,6 +191,12 @@ struct SurfaceHost<Content: View>: View {
         .scaleEffect(isPresented ? 1 : 0.86, anchor: .bottom)
         .animation(SurfaceMotion.materialize, value: isPresented)
         .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { surface?.glassFrame = $0 }
+        // The window controls sit in their own row above the whole surface, centered, shown
+        // while the pointer is over it. The row is always laid out, so the glass never moves.
+        .modifier(WindowControlsRow(
+            onQuit: onQuit, onMinimize: onMinimize, onMaximize: onMaximize,
+            isShown: showsControls, surface: surface
+        ))
         .padding(SurfaceMetrics.overshootMargin)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
         .environment(\.colorScheme, .dark)
@@ -326,6 +349,33 @@ struct SurfaceHost<Content: View>: View {
             } else {
                 withAnimation(SurfaceMotion.drainFollow) { surfaceWidth = clamped.width }
             }
+        }
+    }
+}
+
+/// Puts the window controls above the surface in a column, so they're never over the glass.
+private struct WindowControlsRow: ViewModifier {
+    let onQuit: (() -> Void)?
+    let onMinimize: (() -> Void)?
+    let onMaximize: (() -> Void)?
+    let isShown: Bool
+    let surface: SurfaceState?
+
+    func body(content: Content) -> some View {
+        if let onQuit {
+            VStack(spacing: SurfaceWindowControls.gap) {
+                SurfaceWindowControls(onQuit: onQuit, onMinimize: onMinimize, onExpand: onMaximize)
+                    .fixedSize()
+                    .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { surface?.controlsFrame = $0 }
+                    .opacity(isShown ? 1 : 0)
+                    .blur(radius: isShown ? 0 : 6)
+                    .scaleEffect(isShown ? 1 : 0.9, anchor: .bottom)
+                    .allowsHitTesting(isShown)
+                    .animation(SurfaceMotion.content, value: isShown)
+                content
+            }
+        } else {
+            content
         }
     }
 }
