@@ -15,12 +15,12 @@ struct SurfaceWindowControls: View {
     static let gap: CGFloat = 4
 
     var body: some View {
-        HStack(spacing: 7) {
+        HStack(spacing: 4) {
             Dot(color: .red, glyph: .system("xmark"), action: onQuit)
             Dot(color: .yellow, glyph: .system("minus"), action: onMinimize)
             Dot(color: .green, glyph: .custom("expand"), action: onExpand)
         }
-        .padding(.horizontal, 9)
+        .padding(.horizontal, 8)
         .frame(height: Self.height)
         .background {
             // #000000 at 96%, over the glass so its edge still catches the light.
