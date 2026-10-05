@@ -12,7 +12,7 @@ struct SurfaceWindowControls: View {
 
     static let height: CGFloat = 32
     /// Space between the capsule and the top of the surface.
-    static let gap: CGFloat = 8
+    static let gap: CGFloat = 4
 
     var body: some View {
         HStack(spacing: 7) {
@@ -31,15 +31,15 @@ struct SurfaceWindowControls: View {
         .clipShape(Capsule())
     }
 
-    /// Each dot's fill (lightening slightly toward the bottom) and the thin darker rim around it.
+    /// Each dot's fill (saturated, lightening slightly toward the bottom) and the thin darker rim around it.
     struct DotColor {
         let top: Color
         let bottom: Color
         let rim: Color
 
-        static let red = DotColor(top: Color(hex: 0xDF9581), bottom: Color(hex: 0xDEA18F), rim: Color(hex: 0xB14206))
-        static let yellow = DotColor(top: Color(hex: 0xE9CA67), bottom: Color(hex: 0xEED76F), rim: Color(hex: 0x933E06))
-        static let green = DotColor(top: Color(hex: 0xA5D16C), bottom: Color(hex: 0xBBDA92), rim: Color(hex: 0x32620F))
+        static let red = DotColor(top: Color(hex: 0xE5493A), bottom: Color(hex: 0xF0685A), rim: Color(hex: 0xB14206))
+        static let yellow = DotColor(top: Color(hex: 0xE6A620), bottom: Color(hex: 0xF2BE3A), rim: Color(hex: 0x933E06))
+        static let green = DotColor(top: Color(hex: 0x4FAE2E), bottom: Color(hex: 0x6CC24A), rim: Color(hex: 0x32620F))
 
         var fill: LinearGradient {
             LinearGradient(colors: [top, bottom], startPoint: .top, endPoint: .bottom)
@@ -68,7 +68,7 @@ struct SurfaceWindowControls: View {
                     .blendMode(.plusDarker)
                     .frame(width: Self.size, height: Self.size)
                     .background(Circle().fill(color.fill))
-                    .overlay(Circle().strokeBorder(color.rim.opacity(0.6), lineWidth: 0.5))
+                    .overlay(Circle().strokeBorder(color.rim, lineWidth: 0.5))
                     .compositingGroup()
                     .contentShape(Circle())
             }

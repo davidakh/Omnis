@@ -12,7 +12,7 @@ struct RootView: View {
             onExpand: expandAction,
             onBack: backAction,
             // No grabber on the main compact bar or the live session bars.
-            showsGrabber: ![.compact, .live, .liveCompact, .liveAsk, .modelSetup].contains(state.mode),
+            showsGrabber: ![.compact, .live, .liveCompact, .liveAsk, .modelSetup, .permissions].contains(state.mode),
             onQuit: { state.quit() },
             onMinimize: minimizeAction,
             onMaximize: maximizeAction
@@ -36,6 +36,7 @@ struct RootView: View {
                 AnswerView(state: state, thread: thread) { state.mode = .live }
             case .settings: SettingsScreen(state: state)
             case .modelSetup: ModelSetupScreen(state: state)
+            case .permissions: PermissionsScreen(state: state)
             }
         }
     }
@@ -56,7 +57,7 @@ struct RootView: View {
         case .answerCompact: nil
         case .liveAsk, .liveAnswer: { state.mode = .live }
         case .settings: { state.closeSettings() }
-        case .modelSetup: nil
+        case .modelSetup, .permissions: nil
         }
     }
 
@@ -68,7 +69,7 @@ struct RootView: View {
         case .sessions, .sessionsCompact: { state.closeSessions() }
         case .answer(let thread), .answerCompact(let thread):
             thread.isResumed ? { state.closeAnswer() } : nil
-        case .compact, .expanded, .live, .liveCompact, .liveTranscript, .liveAsk, .liveAnswer, .settings, .modelSetup: nil
+        case .compact, .expanded, .live, .liveCompact, .liveTranscript, .liveAsk, .liveAnswer, .settings, .modelSetup, .permissions: nil
         }
     }
 
@@ -84,7 +85,7 @@ struct RootView: View {
             state.closeSettings()
             state.mode = Self.compactForm(of: state.mode) ?? state.mode
         }
-        case .compact, .sessionsCompact, .sessionCompact, .answerCompact, .liveCompact, .modelSetup: nil
+        case .compact, .sessionsCompact, .sessionCompact, .answerCompact, .liveCompact, .modelSetup, .permissions: nil
         }
     }
 
@@ -96,7 +97,7 @@ struct RootView: View {
         case .sessionCompact(let session): { state.mode = .session(session) }
         case .answerCompact(let thread): { state.mode = .answer(thread) }
         case .liveCompact: { state.mode = .live }
-        case .expanded, .sessions, .session, .answer, .live, .liveTranscript, .liveAsk, .liveAnswer, .settings, .modelSetup: nil
+        case .expanded, .sessions, .session, .answer, .live, .liveTranscript, .liveAsk, .liveAnswer, .settings, .modelSetup, .permissions: nil
         }
     }
 
@@ -119,7 +120,7 @@ struct RootView: View {
         case .sessionCompact(let session): { state.mode = .session(session) }
         case .liveCompact: { state.mode = .live }
         case .answerCompact(let thread): { state.mode = .answer(thread) }
-        case .expanded, .sessions, .session, .live, .liveTranscript, .answer, .liveAsk, .liveAnswer, .settings, .modelSetup: nil
+        case .expanded, .sessions, .session, .live, .liveTranscript, .answer, .liveAsk, .liveAnswer, .settings, .modelSetup, .permissions: nil
         }
     }
 }

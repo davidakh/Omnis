@@ -14,6 +14,8 @@ final class AppState {
         indirect case settings(Mode)
         /// Downloading a model, before Omnis can be used.
         case modelSetup
+        /// Asking for Screen Recording and the microphone, once, after the model.
+        case permissions
     }
     enum SessionsTab { case sessions, conversations }
     enum DetailTab { case summary, transcript, chats }
@@ -73,6 +75,7 @@ final class AppState {
         } else {
             mode = .modelSetup
         }
+        if mode == .compact, !hasSeenPermissions { mode = .permissions }
 
         // Load the downloaded model now, off the main thread, so the first question doesn't
         // wait on reading its weights and compiling its GPU kernels.
@@ -395,8 +398,17 @@ final class AppState {
     func useDownloadedModel(_ model: LocalModelOption) {
         settings.localModelID = model.id
         settings.provider = .local
-        if mode == .modelSetup { mode = .compact }
+        if mode == .modelSetup { mode = hasSeenPermissions ? .compact : .permissions }
         warmUpLocalModel()
+    }
+
+    private static let permissionsKey = "permissions.seen"
+    private var hasSeenPermissions: Bool { UserDefaults.standard.bool(forKey: Self.permissionsKey) }
+
+    /// Leaves the permission steps for Omnis; they aren't shown again.
+    func finishPermissions() {
+        UserDefaults.standard.set(true, forKey: Self.permissionsKey)
+        if mode == .permissions { mode = .compact }
     }
 
     /// Loads the chosen downloaded model in the background and primes a session with it.
