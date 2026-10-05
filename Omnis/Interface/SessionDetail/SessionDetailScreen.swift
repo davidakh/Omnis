@@ -182,11 +182,12 @@ private struct SessionDetailContent: View {
 
     @ViewBuilder
     private var summaryText: some View {
-        if let summary = session.summary ?? draft.flatMap({ $0.isEmpty ? nil : $0 }) {
+        // A summary being written (or rewritten) streams in place of the saved one.
+        if let summary = draft.flatMap({ $0.isEmpty ? nil : $0 }) ?? session.summary {
             VStack(alignment: .leading, spacing: 14) {
                 // By position, so a paragraph keeps its place while the draft streams into it.
                 ForEach(Array(Self.paragraphs(of: summary).enumerated()), id: \.offset) { _, paragraph in
-                    StreamingText(paragraph, revealsInitialText: session.summary == nil)
+                    StreamingText(paragraph, revealsInitialText: session.summary == nil || draft?.isEmpty == false)
                         .font(.system(size: 13))
                         .foregroundStyle(.white.opacity(0.85))
                         .lineSpacing(3)

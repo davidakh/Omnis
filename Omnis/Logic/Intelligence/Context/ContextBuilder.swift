@@ -168,6 +168,10 @@ struct ContextBuilder {
             from what they returned, quoting with the time it was said. If they didn't contain \
             the answer, say you couldn't find it in that session; don't guess. Never ask the user \
             which session they mean.
+            When the user asks to change, fix or redo a session's summary (shorter, more detail, \
+            a different focus, leave something out), call reviseSummary with the session and \
+            their request in their words, then say in one sentence what you're changing; the new \
+            summary is shown to them to save or cancel, so don't write it yourself.
             """
         }
         if screenMissing {

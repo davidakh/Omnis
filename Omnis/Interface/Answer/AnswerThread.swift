@@ -29,7 +29,21 @@ final class AnswerThread: Hashable {
         var duration: TimeInterval?
         /// How fast the model wrote the answer, when it reports its token count.
         var tokensPerSecond: Double?
+        /// A new summary the model wrote for a session, waiting for the user to save or cancel.
+        var proposal: SummaryProposal?
         var suggestions: [Suggestion] = []
+    }
+
+    /// A rewritten summary shown in the chat before it replaces the session's.
+    struct SummaryProposal {
+        enum Status { case writing, ready, saved, cancelled, failed }
+        /// Where the draft streams in `SessionProcessor.drafts`.
+        let key = UUID()
+        let sessionID: UUID
+        let title: String
+        let time: String
+        var text: String?
+        var status: Status = .writing
     }
 
     /// One suggested reply in auto answer.
@@ -145,6 +159,8 @@ final class AnswerThread: Hashable {
                         turns[index].screenSource = source
                     case .speed(let tokensPerSecond):
                         turns[index].tokensPerSecond = tokensPerSecond
+                    case .summaryProposal(let sessionID, let request, let fromTranscript):
+                        propose(in: index, sessionID: sessionID, request: request, fromTranscript: fromTranscript)
                     case .text(let text):
                         if turns[index].answer.isEmpty {
                             withAnimation(SurfaceMotion.content) { turns[index].answer = text }
@@ -162,6 +178,41 @@ final class AnswerThread: Hashable {
                 finish(index)
             }
         }
+    }
+
+    // MARK: Summary proposals
+
+    /// Writes the new summary under the answer; it isn't saved until the user says so.
+    private func propose(in index: Int, sessionID: UUID, request: String, fromTranscript: Bool) {
+        guard let session = state.store.session(withID: sessionID) else { return }
+        let proposal = SummaryProposal(sessionID: sessionID, title: session.title, time: session.time)
+        withAnimation(SurfaceMotion.content) { turns[index].proposal = proposal }
+        let turnID = turns[index].id
+        Task { [processor = state.processor] in
+            let text = await processor.proposeSummary(for: session, request: request, fromTranscript: fromTranscript, key: proposal.key)
+            guard let at = turns.firstIndex(where: { $0.id == turnID }), turns[at].proposal?.status == .writing else { return }
+            withAnimation(SurfaceMotion.content) {
+                turns[at].proposal?.text = text
+                turns[at].proposal?.status = text == nil ? .failed : .ready
+            }
+            processor.discardDraft(proposal.key)
+        }
+    }
+
+    /// Replaces the session's summary with the proposal.
+    func saveProposal(in turnID: Turn.ID) {
+        guard let at = turns.firstIndex(where: { $0.id == turnID }),
+              let proposal = turns[at].proposal, proposal.status == .ready, let text = proposal.text,
+              let session = state.store.session(withID: proposal.sessionID) else { return }
+        withAnimation(SurfaceMotion.content) { turns[at].proposal?.status = .saved }
+        Task { [processor = state.processor] in await processor.applySummary(text, to: session) }
+    }
+
+    /// Leaves the session's summary as it was.
+    func cancelProposal(in turnID: Turn.ID) {
+        guard let at = turns.firstIndex(where: { $0.id == turnID }), let proposal = turns[at].proposal else { return }
+        withAnimation(SurfaceMotion.content) { turns[at].proposal?.status = .cancelled }
+        state.processor.discardDraft(proposal.key)
     }
 
     /// Auto answer: watches the live transcript and suggests a reply each time the others are

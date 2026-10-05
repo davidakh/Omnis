@@ -13,6 +13,9 @@ enum AskEvent {
     /// How fast the answer was written: tokens generated per second, from its first word to
     /// its last. Sent once it's done, when the model reports its token count.
     case speed(tokensPerSecond: Double)
+    /// The model wants to change a session's summary: the chat writes a proposal for the user to
+    /// save or cancel.
+    case summaryProposal(sessionID: UUID, request: String, fromTranscript: Bool)
 }
 
 /// Answers a question with the user's chosen model, from context gathered by
@@ -142,10 +145,15 @@ final class AskService {
         let listed: @MainActor @Sendable () -> [Session] = { [index = builder.index] in
             index.recentSessions(limit: ContextBuilder.lookupCatalogSize)
         }
-        let tools: [any Tool] = model.supportsLookUp ? [
+        var tools: [any Tool] = model.supportsLookUp ? [
             SearchTranscriptTool(sessions: listed, budget: budget) { continuation.yield(.status($0)) },
             ReadSummaryTool(sessions: listed, budget: budget) { continuation.yield(.status($0)) }
         ] : []
+        if model.supportsLookUp {
+            tools.append(ReviseSummaryTool(sessions: listed, revise: { session, request, fromTranscript in
+                continuation.yield(.summaryProposal(sessionID: session.id, request: request, fromTranscript: fromTranscript))
+            }) { continuation.yield(.status($0)) })
+        }
 
         continuation.yield(.status(String(localized: "Thinking")))
         let session = Self.session(model: model, instructions: context.instructions, history: history, tools: tools)

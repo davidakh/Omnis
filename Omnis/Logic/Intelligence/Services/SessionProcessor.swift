@@ -26,6 +26,13 @@ enum NameCheck {
     ]
 }
 
+/// A change the user asked for to a session's summary ("shorter", "focus on the advice"), with
+/// the summary as it stands.
+struct SummaryRevision {
+    let request: String
+    let current: String?
+}
+
 /// What the model writes for a finished session.
 struct SessionDigest {
     var title: String
@@ -112,18 +119,21 @@ final class SessionProcessor {
     /// Recordings are anything: meetings, calls, videos, podcasts, lectures. The prompts never
     /// assume a meeting, or a small model fills in decisions and action items that weren't there.
     private static let summaryInstructions = """
-        You summarize recordings accurately and concisely: meetings, calls, videos, podcasts or \
-        lectures. Describe only what was actually said; never add decisions, action items or \
-        conclusions that aren't in it. Skip ads, sponsor messages and unrelated interruptions. \
-        The transcript comes from speech recognition and may mishear names; use the correct \
-        spelling only when it's clear from context. Lines labeled "You" are the user; refer to \
-        them as "you".
+        You summarize recordings (meetings, calls, videos, podcasts, lectures) in short \
+        paragraphs separated by blank lines. Describe only what was said, in the order it came \
+        up; never add decisions, action items or conclusions that weren't stated. Ads and \
+        sponsor reads aren't part of the recording, so don't cover them. Write only the summary \
+        itself: no preface, no closing remark, and nothing about how it was written or what \
+        was left out. Say each point once. The transcript comes from speech recognition and may \
+        mishear names; use the correct spelling only when it's clear from context. Lines \
+        labeled "You" are the user; refer to them as "you".
         """
 
     private static let notesInstructions = """
         You take concise, faithful notes on parts of recording transcripts (meetings, calls, \
-        videos, podcasts or lectures). Note only what was said. Skip ads, sponsor messages and \
-        unrelated interruptions.
+        videos, podcasts or lectures). Note only what was said, each point once. Ads and \
+        sponsor reads aren't part of the recording, so take no notes on them. Write only the \
+        notes: nothing about what you left out.
         """
 
     init(store: SessionStore, index: SessionIndex, resolver: ModelResolver) {
@@ -159,6 +169,70 @@ final class SessionProcessor {
             guard let last = lines.last, last.offset >= Self.minimumSectionedLength else { continue }
             session.sections = await sections(for: lines)
             store.save()
+        }
+    }
+
+    /// Writes a revised summary the way the user asked, without saving it: the chat shows it for
+    /// the user to save or cancel. It streams into `drafts[key]` as it's written.
+    ///
+    /// - Parameter fromTranscript: the change needs what the current summary doesn't have
+    ///   ("add what they said about parenting"), so it's rewritten from the session. Otherwise
+    ///   (remove the ads, shorten it, split it into paragraphs) the current summary is edited
+    ///   directly: one quick pass that never reads the transcript again.
+    func proposeSummary(for session: Session, request: String, fromTranscript: Bool, key: UUID) async -> String? {
+        defer { progress[key] = nil }
+        let lines = session.orderedLines
+        let speakers = Set(lines.map(\.speaker))
+        var revised: String?
+        if !fromTranscript, let current = session.summary, !current.isEmpty {
+            progress[key] = String(localized: "Editing the Summary")
+            revised = await edit(current, request: request, speakers: speakers, sessionID: key)
+        } else if !lines.isEmpty {
+            let transcript = lines.map { "\($0.speaker): \($0.text)" }.joined(separator: "\n")
+            let revision = SummaryRevision(request: request, current: session.summary)
+            revised = await digest(transcript: transcript, notes: [], speakers: speakers, sessionID: key, revision: revision)?.summary
+        }
+        let summary = revised?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return summary?.isEmpty == false ? summary : nil
+    }
+
+    /// Saves a summary the user approved: the definition and index follow it; the title stays.
+    func applySummary(_ summary: String, to session: Session) async {
+        session.summary = summary
+        store.save()
+        index.index(session)
+        if let model = await resolver.preferred(),
+           let definition = try? await label(forSummary: summary, model: model).definition,
+           !definition.isEmpty,
+           NameCheck.ungroundedNames(in: definition, source: summary + "\n" + session.transcriptText).isEmpty {
+            session.definition = definition
+            store.save()
+        }
+    }
+
+    /// Clears a proposal's draft once the chat is done with it.
+    func discardDraft(_ key: UUID) {
+        drafts[key] = nil
+        progress[key] = nil
+    }
+
+    /// Applies the user's change to a summary as it stands, keeping everything they didn't ask
+    /// to change. Streams into the draft.
+    private func edit(_ summary: String, request: String, speakers: Set<String>, sessionID: UUID) async -> String? {
+        guard let model = await resolver.preferred() else { return nil }
+        let prompt = """
+            Edit this summary of a recording the way the user asked: "\(request)". Change only \
+            what that requires and keep everything else as it is. Don't add anything that isn't \
+            already in the summary. Write it as short paragraphs separated by blank lines.
+
+            Summary:
+            \(summary)
+            """
+        do {
+            return try await writeSummary(prompt, model: model, draftKey: sessionID, speakers: speakers)
+        } catch {
+            Self.log.error("Summary edit failed: \(error.localizedDescription, privacy: .public)")
+            return nil
         }
     }
 
@@ -326,7 +400,7 @@ final class SessionProcessor {
 
     // MARK: - Summarizing
 
-    private func digest(transcript: String, notes: [String], speakers: Set<String>, sessionID: UUID) async -> SessionDigest? {
+    private func digest(transcript: String, notes: [String], speakers: Set<String>, sessionID: UUID, revision: SummaryRevision? = nil) async -> SessionDigest? {
         let model: ResolvedModel
         if let chosen = try? await resolver.resolve() {
             model = chosen
@@ -340,7 +414,7 @@ final class SessionProcessor {
         // until the next launch).
         for attempt in 1...2 {
             do {
-                return try await digest(transcript: transcript, notes: notes, speakers: speakers, model: model, sessionID: sessionID)
+                return try await digest(transcript: transcript, notes: notes, speakers: speakers, model: model, sessionID: sessionID, revision: revision)
             } catch is CancellationError {
                 return nil
             } catch {
@@ -350,12 +424,12 @@ final class SessionProcessor {
         }
         // Prefer a summary from the on-device model over none at all.
         guard model.provider != .appleOnDevice, let fallback = try? resolver.onDevice() else { return nil }
-        return try? await digest(transcript: transcript, notes: notes, speakers: speakers, model: fallback, sessionID: sessionID)
+        return try? await digest(transcript: transcript, notes: notes, speakers: speakers, model: fallback, sessionID: sessionID, revision: revision)
     }
 
     private static let log = Logger(subsystem: Bundle.main.bundleIdentifier ?? "Omnis", category: "Summaries")
 
-    private func digest(transcript: String, notes: [String], speakers: Set<String>, model: ResolvedModel, sessionID: UUID) async throws -> SessionDigest {
+    private func digest(transcript: String, notes: [String], speakers: Set<String>, model: ResolvedModel, sessionID: UUID, revision: SummaryRevision? = nil) async throws -> SessionDigest {
         let limit = Int(Double(model.promptBudget) * 0.85)
         var material: String
         var isNotes: Bool
@@ -379,34 +453,72 @@ final class SessionProcessor {
             }
         }
 
-        progress[sessionID] = String(localized: "Writing the Summary")
-        let prompt = """
+        progress[sessionID] = String(localized: revision == nil ? "Writing the Summary" : "Rewriting the Summary")
+        var prompt = """
         Summarize this recording in two to four short paragraphs, covering it from start to \
         finish: what it was, then the main topics and points in the order they came up. Mention \
         decisions or next steps only if they were stated.
+        """
+        if let revision {
+            // The user's request shapes this summary (length, focus, what to include or leave
+            // out), but it still says only what the recording says.
+            prompt = """
+            Rewrite this recording's summary the way the user asked: "\(revision.request)". Follow \
+            their request for length, focus, tone and what to include or leave out; otherwise \
+            cover the recording in order. Everything in it must come from the \
+            \(isNotes ? "notes" : "transcript") below, never from the request itself.
+            """
+            if let current = revision.current, !current.isEmpty {
+                prompt += "\n\nThe current summary:\n\(current)"
+            }
+        }
+        prompt += """
+
 
         \(isNotes ? "Notes from the session" : "Transcript"):
         \(material)
         """
-        // Streamed, so the summary can be read while it's written.
-        let session = LanguageModelSession(model: model.model, instructions: Self.summaryInstructions)
-        var summary = ""
-        if model.supportsGuidedGeneration {
-            for try await snapshot in session.streamResponse(to: prompt, generating: SummaryText.self) {
-                guard let text = snapshot.content.summary else { continue }
-                summary = text
-                drafts[sessionID] = text
-            }
-        } else {
-            for try await snapshot in session.streamResponse(to: prompt) {
-                summary = snapshot.content
-                drafts[sessionID] = summary
-            }
-        }
-        summary = Self.trimmingTrailingSpeaker(summary, speakers: speakers)
+        let summary = try await writeSummary(prompt, model: model, draftKey: sessionID, speakers: speakers)
         // The title and definition come from the finished summary: a short read, so they take a moment.
         let label = try? await self.label(forSummary: summary, model: model)
         return SessionDigest(title: label?.title ?? "", definition: label?.definition ?? "", summary: summary)
+    }
+
+    /// Longest a summary may run; a few short paragraphs fit well inside, and a model that starts
+    /// looping stops here at the latest.
+    private static let summaryTokens = 900
+
+    /// Writes a summary (new, rewritten or edited), streamed into `drafts[draftKey]` so it can
+    /// be read as it's written. A model that starts repeating itself is stopped at the repeat,
+    /// and the result keeps only the summary: no lines about ads left out or how it was written.
+    private func writeSummary(_ prompt: String, model: ResolvedModel, draftKey: UUID, speakers: Set<String>) async throws -> String {
+        let session = LanguageModelSession(model: model.model, instructions: Self.summaryInstructions)
+        // A little randomness keeps a small model out of loops greedy decoding falls into.
+        let options = GenerationOptions(temperature: 0.3, maximumResponseTokens: Self.summaryTokens)
+        var summary = ""
+        func take(_ text: String) -> Bool {
+            if let kept = SummaryCleanup.untilRepeat(text) {
+                summary = kept
+                drafts[draftKey] = kept
+                return false
+            }
+            summary = text
+            drafts[draftKey] = text
+            return true
+        }
+        if model.supportsGuidedGeneration {
+            for try await snapshot in session.streamResponse(to: prompt, generating: SummaryText.self, options: options) {
+                guard let text = snapshot.content.summary else { continue }
+                if !take(text) { break }
+            }
+        } else {
+            for try await snapshot in session.streamResponse(to: prompt, options: options) {
+                if !take(snapshot.content) { break }
+            }
+        }
+        let cleaned = SummaryCleanup.clean(Self.trimmingTrailingSpeaker(summary, speakers: speakers))
+        drafts[draftKey] = cleaned
+        return cleaned
     }
 
     /// Removes a speaker label the model left dangling at the end ("…next steps. You"), in case
@@ -486,12 +598,14 @@ final class SessionProcessor {
             model: model.model,
             instructions: Self.notesInstructions
         )
-        let options = GenerationOptions(maximumResponseTokens: Self.noteTokens)
+        let options = GenerationOptions(temperature: 0.3, maximumResponseTokens: Self.noteTokens)
         do {
-            return try await session.respond(
+            let notes = try await session.respond(
                 to: "List up to 8 key points from this part, in order, as short bullets. Include decisions or action items only if someone actually stated them.\n\n\(part)",
                 options: options
             ).content
+            // Notes that loop stop at the first repeated point.
+            return SummaryCleanup.untilRepeat(notes) ?? notes
         } catch LanguageModelError.contextSizeExceeded {
             let lines = part.components(separatedBy: "\n")
             guard lines.count > 1 else { throw LanguageModelError.contextSizeExceeded(.init(contextSize: 0, tokenCount: 0, debugDescription: "A single line is too long")) }

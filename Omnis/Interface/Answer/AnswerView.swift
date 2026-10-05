@@ -184,6 +184,16 @@ struct AnswerView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
 
+            if let proposal = turn.proposal {
+                SummaryProposalCard(
+                    proposal: proposal,
+                    draft: state.processor.drafts[proposal.key],
+                    save: { thread.saveProposal(in: turn.id) },
+                    cancel: { thread.cancelProposal(in: turn.id) }
+                )
+                .transition(.blurReplace)
+            }
+
             if let notice = turn.screenNotice {
                 ScreenNotice(reason: notice)
                     .transition(.opacity)
@@ -339,6 +349,104 @@ private struct ChatMoreMenu: View {
                 }
                 .disabled(thread.chatID == nil)
             }
+        }
+    }
+}
+
+/// A new summary the model wrote, shown before it replaces the session's: the session's title
+/// and date, the summary (streaming while it's written), then Cancel and Save.
+private struct SummaryProposalCard: View {
+    let proposal: AnswerThread.SummaryProposal
+    /// The summary so far, while it's being written.
+    let draft: String?
+    let save: () -> Void
+    let cancel: () -> Void
+
+    private var shape: RoundedRectangle { RoundedRectangle(cornerRadius: 22, style: .continuous) }
+    private var text: String? { proposal.text ?? draft.flatMap { $0.isEmpty ? nil : $0 } }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text(proposal.title)
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                Spacer(minLength: 8)
+                Text(proposal.time)
+                    .font(.subheadline)
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 14)
+            // A square band across the top; only the card's own outer corners are rounded.
+            .background(Rectangle().fill(.white.opacity(0.06)))
+
+            VStack(alignment: .leading, spacing: 14) {
+                summary(for: proposal.status)
+                footer
+            }
+            .padding(16)
+        }
+        .background(.ultraThinMaterial, in: shape)
+        .clipShape(shape)
+        .animation(SurfaceMotion.content, value: proposal.status)
+    }
+
+    @ViewBuilder
+    private func summary(for status: AnswerThread.SummaryProposal.Status) -> some View {
+        if status == .failed {
+            Text("Couldn't write a new summary. The current one is unchanged.")
+                .font(.subheadline)
+                .foregroundStyle(.white.opacity(0.6))
+        } else if let text {
+            StreamingText(text, revealsInitialText: status == .writing)
+                .font(.subheadline)
+                .foregroundStyle(.white.opacity(status == .cancelled ? 0.4 : 0.85))
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+            ShimmerText(String(localized: "Writing the new summary"))
+                .font(.subheadline)
+        }
+    }
+
+    @ViewBuilder
+    private var footer: some View {
+        switch proposal.status {
+        case .writing, .ready:
+            HStack(spacing: 10) {
+                Button(action: cancel) {
+                    Text("Cancel")
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity, minHeight: 32, maxHeight: 32)
+                        .background(.white.opacity(0.12), in: Capsule())
+                        .contentShape(Capsule())
+                }
+                Button(action: save) {
+                    Text("Save")
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(.black)
+                        .frame(maxWidth: .infinity, minHeight: 32, maxHeight: 32)
+                        .background(.white, in: Capsule())
+                        .contentShape(Capsule())
+                }
+                .disabled(proposal.status != .ready)
+                .opacity(proposal.status == .ready ? 1 : 0.5)
+            }
+            .buttonStyle(.plain)
+        case .saved:
+            Label("Saved to the session", systemImage: "checkmark")
+                .font(.subheadline)
+                .foregroundStyle(.white.opacity(0.6))
+        case .cancelled:
+            Text("Cancelled. The summary is unchanged.")
+                .font(.subheadline)
+                .foregroundStyle(.white.opacity(0.6))
+        case .failed:
+            EmptyView()
         }
     }
 }

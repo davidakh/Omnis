@@ -196,3 +196,41 @@ nonisolated struct ReadSummaryTool: Tool {
         }
     }
 }
+
+/// Proposes a new summary for a session the way the user asks ("make it shorter", "remove the
+/// ads"). The chat shows it as it's written, for the user to save or cancel.
+nonisolated struct ReviseSummaryTool: Tool {
+    let sessions: @MainActor @Sendable () -> [Session]
+    /// Starts the rewrite (session, request, whether it needs the transcript); returns at once.
+    let revise: @MainActor @Sendable (Session, String, Bool) -> Void
+    let onUse: @Sendable (String) -> Void
+
+    let name = "reviseSummary"
+    let description = """
+        Writes a new version of a session's summary following the user's request (shorter, \
+        longer, a different focus, include or leave something out) and shows it to the user to \
+        save or cancel. Use it only when the user asks to change, fix or redo a summary.
+        """
+
+    @Generable
+    struct Arguments {
+        @Guide(description: "The session's title or number from the list")
+        var session: String
+        @Guide(description: "What the user wants changed, in their words")
+        var request: String
+        @Guide(description: "true only if the change needs details the current summary doesn't have (add a topic, more detail on something); false to edit the summary as it is (remove ads or parts, shorten, reorganize, fix wording)")
+        var needsTranscript: Bool
+    }
+
+    func call(arguments: Arguments) async throws -> String {
+        await MainActor.run {
+            guard let session = SessionLookup.session(arguments.session, in: sessions()) else {
+                return "There's no session called \(arguments.session) in the list."
+            }
+            guard !session.lines.isEmpty else { return "\"\(session.title)\" has no transcript to summarize." }
+            onUse(String(localized: "Rewriting the summary of “\(session.title)”"))
+            revise(session, arguments.request, arguments.needsTranscript)
+            return "A new summary of \"\(session.title)\" is being written and shown to the user below your reply, where they can save or cancel it. In one short sentence, tell them what you're changing. Don't write the summary yourself."
+        }
+    }
+}
