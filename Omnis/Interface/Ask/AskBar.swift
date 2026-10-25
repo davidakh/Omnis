@@ -3,16 +3,7 @@ import SwiftUI
 /// A text field with buttons. While the text fits on one line it's a 72 pt capsule row;
 /// once it wraps, the field moves above the buttons.
 struct AskBar: View {
-    /// The main ask, or asking about the live session (which swaps in the transcript button,
-    /// and shows compose selected while empty: tapping it returns to the session).
-    enum Context { case main, liveSession }
-
     @Bindable var state: AppState
-    var context: Context = .main
-
-    private var placeholder: String {
-        context == .main ? "Ask anything" : "Ask About This Session"
-    }
 
     @Environment(SurfaceState.self) private var surface: SurfaceState?
     @FocusState private var fieldFocused: Bool
@@ -25,7 +16,7 @@ struct AskBar: View {
 
     var body: some View {
         AskBarLayout(isMultiline: isMultiline) {
-            TextField(placeholder, text: $state.text, axis: .vertical)
+            TextField("Ask anything", text: $state.text, axis: .vertical)
                 .textFieldStyle(.plain)
                 .font(Self.fieldFont)
                 .environment(\.lineHeight, Self.fieldLineHeight)
@@ -34,18 +25,8 @@ struct AskBar: View {
                 .focused($fieldFocused)
                 .onSubmit(send)
             MoreMenu(state: state, showsQuit: true)
-            switch context {
-            case .main:
-                SurfaceButton("list.bullet") { state.showSessions() }
-                SurfaceButton(isEmpty ? "play.fill" : "arrow.up", style: .prominent) {
-                    if isEmpty { state.startSession(compact: false) } else { send() }
-                }
-            case .liveSession:
-                SurfaceButton("quote.bubble") { state.mode = .liveTranscript }
-                SurfaceButton(isEmpty ? "square.and.pencil" : "arrow.up", style: .prominent) {
-                    if isEmpty { state.mode = .live } else { send() }
-                }
-            }
+            SurfaceButton("arrow.up", style: .prominent) { send() }
+                .disabled(isEmpty)
         }
         .padding(isMultiline ? 20 : 18)
         .background(alignment: .topLeading) { lineProbe }
@@ -86,11 +67,11 @@ struct AskBar: View {
         guard !isEmpty else { return }
         let question = state.text.trimmingCharacters(in: .whitespacesAndNewlines)
         state.text = ""
-        state.openAnswer(question, live: context != .main)
+        state.openAnswer(question)
     }
 }
 
-/// Lays out [field, ellipsis, list, send] either in one row or with the field above the buttons.
+/// Lays out [field, ellipsis, send] either in one row or with the field above the buttons.
 /// One custom layout (rather than switching stacks) keeps the text field's identity and focus.
 private struct AskBarLayout: Layout {
     var isMultiline: Bool
@@ -98,14 +79,13 @@ private struct AskBarLayout: Layout {
     static let width: CGFloat = 320          // 360 pt surface minus 20 pt padding each side
     static let buttonSize: CGFloat = 32
     static let rowSpacing: CGFloat = 6       // between the field and buttons on one line
-    static let multilineSpacing: CGFloat = 4 // between the trailing buttons below the field
     static let fieldToButtons: CGFloat = 16  // vertical gap below the field when multiline
-    static var singleLineFieldWidth: CGFloat { width - 3 * buttonSize - 3 * rowSpacing }
+    static var singleLineFieldWidth: CGFloat { width - 2 * buttonSize - 2 * rowSpacing }
     /// Slightly narrower than the field, so the layout switches before the field itself wraps.
     static var singleLineProbeWidth: CGFloat { singleLineFieldWidth - 6 }
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        guard subviews.count == 4 else { return .zero }
+        guard subviews.count == 3 else { return .zero }
         let field = fieldSize(subviews)
         let height = isMultiline
             ? field.height + Self.fieldToButtons + Self.buttonSize
@@ -114,26 +94,21 @@ private struct AskBarLayout: Layout {
     }
 
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        guard subviews.count == 4 else { return }
+        guard subviews.count == 3 else { return }
         let field = fieldSize(subviews)
         let button = ProposedViewSize(width: Self.buttonSize, height: Self.buttonSize)
-        let (ellipsis, list, send) = (subviews[1], subviews[2], subviews[3])
+        let (ellipsis, send) = (subviews[1], subviews[2])
 
         if isMultiline {
             subviews[0].place(at: bounds.origin, anchor: .topLeading, proposal: ProposedViewSize(field))
             let rowY = bounds.maxY - Self.buttonSize / 2
             ellipsis.place(at: CGPoint(x: bounds.minX, y: rowY), anchor: .leading, proposal: button)
             send.place(at: CGPoint(x: bounds.maxX, y: rowY), anchor: .trailing, proposal: button)
-            list.place(
-                at: CGPoint(x: bounds.maxX - Self.buttonSize - Self.multilineSpacing, y: rowY),
-                anchor: .trailing, proposal: button
-            )
         } else {
             subviews[0].place(at: CGPoint(x: bounds.minX, y: bounds.midY), anchor: .leading, proposal: ProposedViewSize(field))
             let step = Self.buttonSize + Self.rowSpacing
             send.place(at: CGPoint(x: bounds.maxX, y: bounds.midY), anchor: .trailing, proposal: button)
-            list.place(at: CGPoint(x: bounds.maxX - step, y: bounds.midY), anchor: .trailing, proposal: button)
-            ellipsis.place(at: CGPoint(x: bounds.maxX - step * 2, y: bounds.midY), anchor: .trailing, proposal: button)
+            ellipsis.place(at: CGPoint(x: bounds.maxX - step, y: bounds.midY), anchor: .trailing, proposal: button)
         }
     }
 
