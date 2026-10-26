@@ -2,11 +2,11 @@ import Foundation
 import os
 
 /// A model Omnis can download from Hugging Face and run on this Mac with MLX.
-struct LocalModelOption: Identifiable, Hashable {
-    /// The Hugging Face repo, e.g. "prism-ml/Bonsai-8B-mlx-1bit".
+nonisolated struct LocalModelOption: Identifiable, Hashable {
+    /// The Hugging Face repo, e.g. "prism-ml/Ternary-Bonsai-2-9B-mlx-2bit".
     let id: String
     let name: String
-    /// How it's described in the list: "Huge", "Larger", "Tiny".
+    /// How it's described in the list: "Huge", "Large", "Tiny".
     let size: String
     /// Memory the Mac needs to run it comfortably, in GB.
     let requiredMemory: Int
@@ -14,19 +14,31 @@ struct LocalModelOption: Identifiable, Hashable {
     let supportsVision: Bool
     /// Tokens of context it can read; prompts are capped below this to bound memory.
     let contextLength: Int
+    /// Prompt tokens it reads per second, as a starting point until it has been timed on this
+    /// Mac (measured on an M2 Max).
+    let estimatedPromptSpeed: Double
 
+    /// Bonsai 2: ternary (2-bit) Qwen 3.5 models from PrismML, each with a vision tower.
     static let all: [LocalModelOption] = [
         LocalModelOption(
-            id: "prism-ml/Bonsai-27B-mlx-1bit", name: "Bonsai 27B", size: String(localized: "Huge"),
-            requiredMemory: 16, supportsVision: true, contextLength: 262_144
+            id: "prism-ml/Ternary-Bonsai-2-27B-mlx-2bit", name: "Bonsai 2 27B", size: String(localized: "Huge"),
+            requiredMemory: 16, supportsVision: true, contextLength: 262_144,
+            estimatedPromptSpeed: 110
         ),
         LocalModelOption(
-            id: "prism-ml/Bonsai-8B-mlx-1bit", name: "Bonsai 8B", size: String(localized: "Larger"),
-            requiredMemory: 8, supportsVision: false, contextLength: 65_536
+            id: "prism-ml/Ternary-Bonsai-2-9B-mlx-2bit", name: "Bonsai 2 9B", size: String(localized: "Large"),
+            requiredMemory: 8, supportsVision: true, contextLength: 262_144,
+            estimatedPromptSpeed: 500
         ),
         LocalModelOption(
-            id: "prism-ml/Bonsai-4B-mlx-1bit", name: "Bonsai 4B", size: String(localized: "Tiny"),
-            requiredMemory: 4, supportsVision: false, contextLength: 32_768
+            id: "prism-ml/Ternary-Bonsai-2-4B-mlx-2bit", name: "Bonsai 2 4B", size: String(localized: "Small"),
+            requiredMemory: 4, supportsVision: true, contextLength: 262_144,
+            estimatedPromptSpeed: 900
+        ),
+        LocalModelOption(
+            id: "prism-ml/Ternary-Bonsai-2-2B-mlx-2bit", name: "Bonsai 2 2B", size: String(localized: "Tiny"),
+            requiredMemory: 4, supportsVision: true, contextLength: 262_144,
+            estimatedPromptSpeed: 1_500
         )
     ]
 
@@ -37,10 +49,47 @@ struct LocalModelOption: Identifiable, Hashable {
         ProcessInfo.processInfo.physicalMemory >= UInt64(requiredMemory) * 1_073_741_824
     }
 
+    /// Tokens of context a chat answer reads: about `promptWait` seconds of reading at the speed
+    /// it reads prompts on this Mac. A downloaded model reads every prompt token before its
+    /// first word, so this is what keeps answers prompt.
+    var chatBudget: Int {
+        let speed = LocalModelSpeed.promptTokensPerSecond(for: self) ?? estimatedPromptSpeed
+        return min(max(Int(speed * Self.promptWait), Self.minimumChatBudget), Self.maximumChatBudget)
+    }
+
+    /// Web and screen context arrive as the most relevant passages, so a few seconds' worth
+    /// carries what an answer needs.
+    private static let promptWait = 3.5
+    /// Enough for the question, the instructions and a little screen or web context.
+    private static let minimumChatBudget = 1_000
+    private static let maximumChatBudget = 8_000
+
     /// Where its files live: one folder per model, named after the repo so each has its own
     /// identity in MLX's model cache.
     var directory: URL {
         LocalModelStore.root.appending(path: id.replacingOccurrences(of: "/", with: "--"), directoryHint: .isDirectory)
+    }
+}
+
+/// How fast each downloaded model reads prompts on this Mac, timed on real answers and
+/// remembered across launches.
+nonisolated enum LocalModelSpeed {
+    private static let key = "model.local.promptSpeed"
+
+    static func promptTokensPerSecond(for model: LocalModelOption) -> Double? {
+        (UserDefaults.standard.dictionary(forKey: key) as? [String: Double])?[model.id]
+    }
+
+    /// Records one answer's prompt reading: `tokens` read in `seconds` before its first word.
+    /// Short prompts are mostly fixed overhead, so only longer ones count; each new timing is
+    /// blended with the last so one slow answer (another app busy on the GPU) doesn't swing it.
+    static func record(tokens: Int, seconds: Double, for model: LocalModelOption) {
+        guard tokens >= 400, seconds > 0.05 else { return }
+        var speeds = UserDefaults.standard.dictionary(forKey: key) as? [String: Double] ?? [:]
+        let measured = Double(tokens) / seconds
+        let previous = speeds[model.id] ?? model.estimatedPromptSpeed
+        speeds[model.id] = 0.6 * previous + 0.4 * measured
+        UserDefaults.standard.set(speeds, forKey: key)
     }
 }
 
@@ -67,6 +116,21 @@ final class LocalModelStore {
 
     init() {
         installed = Set(LocalModelOption.all.filter { Self.isComplete($0) }.map(\.id))
+        Task.detached(priority: .utility) { Self.removeRetiredModels() }
+    }
+
+    /// Deletes downloaded models Omnis no longer offers (the original Bonsai), so their
+    /// gigabytes don't linger after an update.
+    nonisolated private static func removeRetiredModels() {
+        let offered = Set(LocalModelOption.all.map(\.directory.lastPathComponent))
+        let fileManager = FileManager.default
+        guard let folders = try? fileManager.contentsOfDirectory(
+            at: root, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]
+        ) else { return }
+        for folder in folders where !offered.contains(folder.lastPathComponent) {
+            guard (try? folder.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true else { continue }
+            try? fileManager.removeItem(at: folder)
+        }
     }
 
     func state(of model: LocalModelOption) -> DownloadState { downloads[model.id] ?? .idle }

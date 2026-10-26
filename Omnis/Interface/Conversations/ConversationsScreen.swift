@@ -1,33 +1,43 @@
 import SwiftUI
 
-/// 340×400: the saved chats list scrolling behind its two toolbars.
+/// 340×400: the projects, saved chats or scheduled list scrolling behind its two toolbars,
+/// with a tab bar between them.
 struct ConversationsScreen: View {
     let state: AppState
 
     var body: some View {
         ZStack {
-            // Full-height list that scrolls behind both toolbars.
-            ConversationList(state: state)
+            // Full-height list that scrolls behind both toolbars; each tab starts at the top.
+            Group {
+                switch state.chatsTab {
+                case .projects: EmptyTabList(message: "No projects yet")
+                case .conversations: ConversationList(state: state)
+                case .scheduled: EmptyTabList(message: "Nothing scheduled yet")
+                }
+            }
+            .id(state.chatsTab)
+            .transition(.blurReplace)
             toolbars
         }
         .frame(width: 340, height: 400)
+        .animation(SurfaceMotion.content, value: state.chatsTab)
     }
 
     private var toolbars: some View {
         VStack(spacing: 0) {
-            // Top toolbar: back, centered title, more.
+            // Top toolbar: back, centered title, new.
             ZStack {
-                ConversationsTitle()
+                ConversationsTitle(tab: state.chatsTab)
                 HStack {
                     SurfaceButton("chevron.left") { state.closeConversations() }
                     Spacer()
-                    MoreMenu(state: state)
+                    NewMenu(state: state)
                 }
             }
 
             Spacer(minLength: 0)
 
-            // Bottom toolbar: select, new chat, filter. In select mode: select (prominent), a
+            // Bottom toolbar: select, the tabs, filter. In select mode: select (prominent), a
             // glass selection count, and delete. While filtering: the search field.
             if state.isFiltering {
                 ConversationsFilterBar(state: state)
@@ -41,11 +51,17 @@ struct ConversationsScreen: View {
         .animation(SurfaceMotion.content, value: state.isFiltering)
     }
 
+    /// Select and filter work on chats; projects and scheduled have nothing to select or
+    /// search yet.
+    private var listActionsEnabled: Bool { state.chatsTab == .conversations }
+
     private var standardToolbar: some View {
         HStack(spacing: 0) {
             SurfaceButton("checklist", style: state.isSelecting ? .prominent : .standard) {
                 state.toggleSelecting()
             }
+            .disabled(!listActionsEnabled)
+            .opacity(listActionsEnabled ? 1 : 0.4)
             Spacer(minLength: 0)
             if state.isSelecting {
                 Text(state.selection.count == 1 ? "1 Selection" : "\(state.selection.count) Selections")
@@ -57,8 +73,16 @@ struct ConversationsScreen: View {
                     .glassEffect(.clear, in: Capsule())
                     .transition(.blurReplace)
             } else {
-                SurfaceButton("square.and.pencil") { state.closeConversations() }
-                    .transition(.blurReplace)
+                SurfaceTabBar(
+                    tabs: [
+                        .init(value: .projects, title: "Projects", symbol: "tray.full"),
+                        .init(value: .conversations, title: "Chats", symbol: "bubble.left.and.bubble.right"),
+                        .init(value: .scheduled, title: "Scheduled", symbol: "clock")
+                    ],
+                    selection: Bindable(state).chatsTab
+                )
+                .zIndex(1)  // the lifted pill floats above the neighbouring buttons
+                .transition(.blurReplace)
             }
             Spacer(minLength: 0)
             if state.isSelecting {
@@ -68,12 +92,33 @@ struct ConversationsScreen: View {
                     .transition(.blurReplace)
             } else {
                 SurfaceButton("line.3.horizontal.decrease") { state.startFiltering() }
+                    .disabled(!listActionsEnabled)
+                    .opacity(listActionsEnabled ? 1 : 0.4)
                     .transition(.blurReplace)
             }
         }
+        // The 52 pt tab bar overflows the 32 pt toolbar row, centered on it.
         .frame(height: 32)
         .animation(SurfaceMotion.content, value: state.isSelecting)
         .animation(.smooth(duration: 0.2), value: state.selection.count)
+    }
+}
+
+/// The plus menu: start a new chat, project or task. Projects and tasks aren't built yet, so
+/// those open their tabs.
+private struct NewMenu: View {
+    let state: AppState
+
+    var body: some View {
+        SurfaceMenuButton("plus") {
+            Group {
+                Button("New Chat", systemImage: "bubble.left") { state.newChat() }
+                Button("New Project", systemImage: "tray.full") { state.chatsTab = .projects }
+                Button("New Task", systemImage: "clock") { state.chatsTab = .scheduled }
+            }
+            // macOS menus show titles only by default; show each item's symbol too.
+            .labelStyle(.titleAndIcon)
+        }
     }
 }
 
@@ -107,37 +152,42 @@ private struct ConversationsFilterBar: View {
     }
 }
 
-/// 72 pt capsule: back, title, filter.
-struct ConversationsCompactBar: View {
-    let state: AppState
-
-    var body: some View {
-        HStack(spacing: 0) {
-            SurfaceButton("chevron.left") { state.closeConversations() }
-            Spacer(minLength: 0)
-            ConversationsTitle()
-            Spacer(minLength: 0)
-            SurfaceButton("line.3.horizontal.decrease") {
-                state.mode = .conversations
-                state.startFiltering()
-            }
-        }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 20)
-        .frame(width: 256, height: 72)
-    }
-}
-
 private struct ConversationsTitle: View {
+    let tab: AppState.ChatsTab
+
+    private var title: LocalizedStringKey {
+        switch tab {
+        case .projects: "Projects"
+        case .conversations: "Chats"
+        case .scheduled: "Scheduled"
+        }
+    }
+
     var body: some View {
-        Text("Chats")
+        Text(title)
+            .contentTransition(.numericText())
             .font(.system(size: 15, weight: .semibold))
             .foregroundStyle(.white)
             .toolbarTitleShadow()
     }
 }
 
-// MARK: - List
+// MARK: - Lists
+
+/// A tab that isn't built yet (projects, scheduled): shows where its items will go.
+private struct EmptyTabList: View {
+    let message: LocalizedStringKey
+
+    var body: some View {
+        FadingScroll {
+            Text(message)
+                .font(.system(size: 13))
+                .foregroundStyle(.white.opacity(0.55))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.vertical, 8)
+        }
+    }
+}
 
 /// Scrollable list of saved chats. Rows tint on hover; in select mode they toggle selection
 /// instead of opening. Right-click for Select, Rename, Share and Delete.

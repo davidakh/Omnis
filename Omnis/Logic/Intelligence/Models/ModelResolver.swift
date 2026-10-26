@@ -21,14 +21,14 @@ struct ResolvedModel {
     var chatBudget: Int? = nil
     /// Words an answer may run to; answers are short, so this only stops a runaway reply.
     var maximumAnswerTokens: Int? = nil
+    /// The longest side, in pixels, of a screenshot sent to the model. Image tokens grow with
+    /// the area, and a downloaded model reads them all before its first word.
+    var maximumImageDimension: Int? = nil
 
     var answerBudget: Int { chatBudget ?? promptBudget }
 
     var supportsVision: Bool { model.capabilities.contains(.vision) }
     var supportsGuidedGeneration: Bool { model.capabilities.contains(.guidedGeneration) }
-    /// Can call tools, e.g. to search and read sessions itself. Only offered to models with a
-    /// large context; the small on-device window has no room for what the tools return.
-    var supportsLookUp: Bool { model.capabilities.contains(.toolCalling) && promptBudget >= 16_000 }
 
     /// The on-device model can count tokens exactly; others are estimated.
     var isOnDevice: Bool { provider == .appleOnDevice }
@@ -81,13 +81,10 @@ struct ModelResolver {
     private static let privateCloudReserve = 6_000
     /// Cloud models have huge windows; capping the prompt keeps answers fast and cheap.
     private static let cloudPromptBudget = 48_000
-    /// Downloaded models: room for long sessions without the KV cache taking most of the Mac's memory.
+    /// Downloaded models: room for long chats without the KV cache taking most of the Mac's memory.
     private static let localPromptBudget = 32_768
     /// Kept free for the instructions, thinking and the answer.
     private static let localReserve = 6_000
-    /// What a chat answer reads: the best passages, a session in full when one fits, and the
-    /// recent sessions list. The model's lookup tools fetch more when a question needs it.
-    private static let localChatBudget = 8_000
 
     func resolve(_ provider: ModelProvider? = nil) async throws -> ResolvedModel {
         switch provider ?? settings.provider {
@@ -158,6 +155,7 @@ struct ModelResolver {
         // for minutes before a word of the answer appears. Without `.reasoning` declared, MLX
         // renders the prompt with thinking disabled, so answers start streaming right away.
         let model = LocalModel.languageModel(at: option.directory, vision: option.supportsVision, reasoning: false)
+        let chatBudget = option.chatBudget
         return ResolvedModel(
             provider: .local,
             model: model,
@@ -165,8 +163,11 @@ struct ModelResolver {
             promptBudget: min(option.contextLength, Self.localPromptBudget) - Self.localReserve,
             charactersPerToken: 3.5,
             load: (option.name, { try await model.preload() }),
-            chatBudget: Self.localChatBudget,
-            maximumAnswerTokens: 800
+            chatBudget: chatBudget,
+            maximumAnswerTokens: 800,
+            // A third (or, on a tight budget, a sixth) of the image tokens of a full-size
+            // capture; the screen's text still arrives in full from text recognition.
+            maximumImageDimension: chatBudget >= 3_000 ? 1024 : 768
         )
     }
 

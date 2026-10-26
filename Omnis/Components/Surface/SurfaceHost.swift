@@ -4,8 +4,10 @@ import SwiftUI
 @Observable
 final class SurfaceState {
     var isPresented = false
-    /// The pointer is over the glass or the window controls above it, so the controls show.
+    /// The pointer is over the glass or the window controls above it.
     var isHovering = false
+    /// The pointer is near the top of the glass (or over the window controls), so they show.
+    var showsControls = false
     /// The window controls' frame in panel coordinates, so the presenter lets clicks reach them.
     @ObservationIgnored var controlsFrame: CGRect = .zero
 
@@ -133,7 +135,7 @@ struct SurfaceHost<Content: View>: View {
         self.content = content
     }
 
-    private var showsControls: Bool { onQuit != nil && isPresented && (surface?.isHovering ?? false) }
+    private var showsControls: Bool { onQuit != nil && isPresented && (surface?.showsControls ?? false) }
 
     private var isPresented: Bool { surface?.isPresented ?? true }
 
@@ -144,17 +146,56 @@ struct SurfaceHost<Content: View>: View {
     }
 
     var body: some View {
+        surfaceContent
+            .scaleEffect(scrollScale)
+            .offset(scrollOffset)
+            .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { surface?.glassFrame = $0 }
+            // The window controls sit in their own row above the whole surface, centered, shown
+            // while the pointer is near its top. The row is always laid out, so the glass never moves.
+            .modifier(WindowControlsRow(
+                onQuit: onQuit, onMinimize: onMinimize, onMaximize: onMaximize,
+                isShown: showsControls, surface: surface
+            ))
+            .blur(radius: isPresented ? 0 : 12)
+            .opacity(isPresented ? 1 : 0)
+            .scaleEffect(isPresented ? 1 : 0.86, anchor: .bottom)
+            .animation(SurfaceMotion.materialize, value: isPresented)
+            .padding(SurfaceMetrics.overshootMargin)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+            .environment(\.colorScheme, .dark)
+            .environment(\.appearsActive, true)
+            .materialActiveAppearance(.active)
+            .onChange(of: id, initial: true) {
+                currentID = id
+                surface?.onScroll = { handleScroll($0) }
+                surface?.onPullPastTop = { onCollapse?() }
+                // Content revived mid-transition may not report a new size, so fall back to its
+                // last known one. Deferred so a fresh measurement from this update lands first.
+                Task {
+                    guard currentID == id, let size = naturalSizes[id] else { return }
+                    spill(to: size)
+                }
+            }
+    }
+
+    private var surfaceContent: some View {
         SpillWidth(width: surfaceWidth, height: surfaceHeight) {
-            // A box exactly the glass's size. The content hangs centred over it and the
+            // A box exactly the glass's size. The content sits on its bottom edge and the
             // grabber is pinned to its top, so neither follows the content's own (animating)
             // size; both share the blur pulse below.
+            //
+            // The glass grows up from its bottom edge to fit each screen, so a screen sitting
+            // on that edge is already where it settles: it appears in place, blurring in, while
+            // the glass grows around it (centred, it would ride up from the bottom with the
+            // glass's centre). Screens smaller than the glass's minimum stay centred within it.
             Color.clear
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .overlay {
-                    ZStack {
+                .overlay(alignment: .bottom) {
+                    ZStack(alignment: .bottom) {
                         content()
                             .fixedSize()
                             .onGeometryChange(for: CGSize.self) { $0.size } action: { [id] in measured($0, for: id) }
+                            .frame(minWidth: SurfaceMetrics.minSide, minHeight: SurfaceMetrics.minSide)
                             .id(id)
                             .transition(SurfaceSwapTransition())
                     }
@@ -182,35 +223,6 @@ struct SurfaceHost<Content: View>: View {
                     CubicKeyframe(morphPeak, duration: SurfaceMotion.morphBlurRise)
                     CubicKeyframe(0, duration: SurfaceMotion.morphBlurFall)
                 }
-            }
-        }
-        .scaleEffect(scrollScale)
-        .offset(scrollOffset)
-        .blur(radius: isPresented ? 0 : 12)
-        .opacity(isPresented ? 1 : 0)
-        .scaleEffect(isPresented ? 1 : 0.86, anchor: .bottom)
-        .animation(SurfaceMotion.materialize, value: isPresented)
-        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { surface?.glassFrame = $0 }
-        // The window controls sit in their own row above the whole surface, centered, shown
-        // while the pointer is over it. The row is always laid out, so the glass never moves.
-        .modifier(WindowControlsRow(
-            onQuit: onQuit, onMinimize: onMinimize, onMaximize: onMaximize,
-            isShown: showsControls, surface: surface
-        ))
-        .padding(SurfaceMetrics.overshootMargin)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-        .environment(\.colorScheme, .dark)
-        .environment(\.appearsActive, true)
-        .materialActiveAppearance(.active)
-        .onChange(of: id, initial: true) {
-            currentID = id
-            surface?.onScroll = { handleScroll($0) }
-            surface?.onPullPastTop = { onCollapse?() }
-            // Content revived mid-transition may not report a new size, so fall back to its
-            // last known one. Deferred so a fresh measurement from this update lands first.
-            Task {
-                guard currentID == id, let size = naturalSizes[id] else { return }
-                spill(to: size)
             }
         }
     }
@@ -354,6 +366,7 @@ struct SurfaceHost<Content: View>: View {
 }
 
 /// Puts the window controls above the surface in a column, so they're never over the glass.
+/// They materialize like the surface does: blurring, fading and scaling in from just above it.
 private struct WindowControlsRow: ViewModifier {
     let onQuit: (() -> Void)?
     let onMinimize: (() -> Void)?
@@ -367,11 +380,11 @@ private struct WindowControlsRow: ViewModifier {
                 SurfaceWindowControls(onQuit: onQuit, onMinimize: onMinimize, onExpand: onMaximize)
                     .fixedSize()
                     .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { surface?.controlsFrame = $0 }
+                    .blur(radius: isShown ? 0 : 12)
                     .opacity(isShown ? 1 : 0)
-                    .blur(radius: isShown ? 0 : 6)
-                    .scaleEffect(isShown ? 1 : 0.9, anchor: .bottom)
+                    .scaleEffect(isShown ? 1 : 0.86, anchor: .bottom)
                     .allowsHitTesting(isShown)
-                    .animation(SurfaceMotion.content, value: isShown)
+                    .animation(SurfaceMotion.materialize, value: isShown)
                 content
             }
         } else {
@@ -390,6 +403,33 @@ private struct SurfaceSwapTransition: Transition {
     }
 }
 
+extension EnvironmentValues {
+    /// The glass's current size, updated every frame while it springs to fit its content.
+    /// Content that changes its own size can lay out to this so it moves with the glass
+    /// instead of on its own curve. Nil outside a surface.
+    @Entry var surfaceGlassSize: CGSize? = nil
+}
+
+/// The glass's size for a given (animating) width and height: never under `minSide`, and
+/// squeezed while either side is below it.
+private enum SpillGeometry {
+    static func size(width: CGFloat, height: CGFloat) -> CGSize {
+        let shortest = min(width, height)
+        let squeeze = shortest < SurfaceMetrics.minSide
+            ? max(shortest / SurfaceMetrics.minSide, SurfaceMotion.minimumSqueeze)
+            : 1
+        return CGSize(
+            width: max(width, SurfaceMetrics.minSide) * squeeze,
+            height: max(height, SurfaceMetrics.minSide) * squeeze
+        )
+    }
+
+    /// Capsule while short, rounded rect once taller than `minSide`.
+    static func radius(_ size: CGSize) -> CGFloat {
+        min(min(size.width, size.height) / 2, SurfaceMetrics.maxCornerRadius)
+    }
+}
+
 private struct SpillWidth<Content: View>: View, Animatable {
     var width: CGFloat
     let height: CGFloat
@@ -404,23 +444,15 @@ private struct SpillHeight<Content: View>: View, Animatable {
     @ViewBuilder let content: () -> Content
     var animatableData: CGFloat { get { height } set { height = newValue } }
 
-    private var squeeze: CGFloat {
-        let shortest = min(width, height)
-        guard shortest < SurfaceMetrics.minSide else { return 1 }
-        return max(shortest / SurfaceMetrics.minSide, SurfaceMotion.minimumSqueeze)
-    }
-    private var w: CGFloat { max(width, SurfaceMetrics.minSide) * squeeze }
-    private var h: CGFloat { max(height, SurfaceMetrics.minSide) * squeeze }
-    // capsule while short, rounded rect once taller than minSide
-    private var radius: CGFloat { min(min(w, h) / 2, SurfaceMetrics.maxCornerRadius) }
-
     var body: some View {
+        let size = SpillGeometry.size(width: width, height: height)
+        let radius = SpillGeometry.radius(size)
         let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
-        // The content hangs centred over a box exactly the glass's size, so its own size
-        // (which animates during swaps) can never pull it off centre.
+        // The content hangs over a box exactly the glass's size, so its own size (which
+        // animates during swaps) can never pull it out of place.
         Color.clear
-            .frame(width: w, height: h)
-            .overlay { content() }
+            .frame(width: size.width, height: size.height)
+            .overlay { content().environment(\.surfaceGlassSize, size) }
             .clipShape(shape)
             .background {
                 shape.fill(SurfaceShade.gradient)

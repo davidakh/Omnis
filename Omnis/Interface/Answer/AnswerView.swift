@@ -15,7 +15,7 @@ struct AnswerView: View {
     @State private var thinkingOrb = OrbAnimation(epoch: .now, epochPhase: 0)
     @FocusState private var fieldFocused: Bool
 
-    private static var size: CGSize { CGSize(width: 340, height: 400) }  // matches sessions and session detail
+    private static var size: CGSize { CGSize(width: 340, height: 400) }
     private static var topClear: CGFloat { 60 }      // the thread starts just under the top bar …
     private static var bottomClear: CGFloat { 64 }   // … and ends just above the bottom bar
     private static var font: Font { .system(size: 15) }
@@ -119,14 +119,9 @@ struct AnswerView: View {
                 .padding(.bottom, Self.bottomClear)
             }
             .scrollIndicators(.hidden)
-            // A reopened chat starts at its latest exchange.
+            // Returning from the compact bar starts at the latest exchange.
             .onAppear {
                 if turns.count > 1, let last = turns.last { proxy.scrollTo(last.id, anchor: .top) }
-            }
-            // Auto answer grows in place: follow each new suggestion.
-            .onChange(of: turns.last?.suggestions.count) {
-                guard turns.last?.isAuto == true else { return }
-                withAnimation(.smooth(duration: 0.45)) { proxy.scrollTo(Self.autoAnswerEnd, anchor: .bottom) }
             }
             .onChange(of: turns.count) {
                 guard let last = turns.last else { return }
@@ -168,9 +163,7 @@ struct AnswerView: View {
                     .transition(.blurReplace)
             }
 
-            if turn.isAuto {
-                autoAnswer(turn)
-            } else if turn.answer.isEmpty && turn.isStreaming {
+            if turn.answer.isEmpty && turn.isStreaming {
                 ShimmerText(turn.status)
                     .font(Self.font)
                     .transition(.blurReplace)
@@ -184,25 +177,27 @@ struct AnswerView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
 
-            if let proposal = turn.proposal {
-                SummaryProposalCard(
-                    proposal: proposal,
-                    draft: state.processor.drafts[proposal.key],
-                    save: { thread.saveProposal(in: turn.id) },
-                    cancel: { thread.cancelProposal(in: turn.id) }
-                )
-                .transition(.blurReplace)
-            }
-
             if let notice = turn.screenNotice {
                 ScreenNotice(reason: notice)
                     .transition(.opacity)
             }
 
-            // Only under the latest answer, once it has finished.
+            if turn.webSources.isEmpty, let notice = turn.webNotice {
+                Label(notice, systemImage: "globe")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.white.opacity(0.55))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .transition(.opacity)
+            }
+
+            // Only under the latest answer, once it has finished: feedback and where web facts
+            // came from, then the stats.
             if turn.id == turns.last?.id, !turn.isStreaming {
                 HStack(spacing: 8) {
                     FeedbackButton(question: turn.question, answer: turn.answer)
+                    if !turn.webSources.isEmpty {
+                        WebSources(sources: turn.webSources)
+                    }
                     Spacer(minLength: 0)
                     // How long it took and how fast it was written: "30s - 15tk/s".
                     if let stats = Self.stats(for: turn) {
@@ -213,47 +208,12 @@ struct AnswerView: View {
                     }
                 }
                 .transition(.opacity)
+            } else if !turn.webSources.isEmpty, !turn.isStreaming {
+                // Earlier answers keep their sources.
+                WebSources(sources: turn.webSources)
+                    .transition(.opacity)
             }
         }
-    }
-
-    /// Auto answer: each suggested reply under a quote of what it answers, newest brightest,
-    /// and "Listening" while waiting for the next thing to answer.
-    private func autoAnswer(_ turn: AnswerThread.Turn) -> some View {
-        VStack(alignment: .leading, spacing: 16) {
-            ForEach(turn.suggestions) { suggestion in
-                let isLatest = suggestion.id == turn.suggestions.last?.id
-                VStack(alignment: .leading, spacing: 4) {
-                    if !suggestion.replyingTo.isEmpty {
-                        Text("“\(suggestion.replyingTo)”")
-                            .font(.system(size: 11))
-                            .foregroundStyle(.white.opacity(0.45))
-                            .lineLimit(2)
-                    }
-                    StreamingText(suggestion.text, revealsInitialText: !suggestion.isDone)
-                        .font(Self.font)
-                        .environment(\.lineHeight, Self.lineHeight)
-                        .foregroundStyle(.white.opacity(isLatest ? 1 : 0.5))
-                        .textSelection(.enabled)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .transition(.blurReplace)
-                .animation(SurfaceMotion.content, value: isLatest)
-            }
-            if turn.isStreaming {
-                ShimmerText(turn.status)
-                    .font(Self.font)
-                    .transition(.blurReplace)
-            } else if turn.suggestions.isEmpty {
-                Text(turn.answer)
-                    .font(Self.font)
-                    .foregroundStyle(.white.opacity(0.6))
-            }
-            Color.clear.frame(height: 1).id(Self.autoAnswerEnd)
-        }
-        .animation(SurfaceMotion.content, value: turn.suggestions.map(\.id))
-        .animation(SurfaceMotion.content, value: turn.isStreaming)
     }
 
     /// "30s - 15tk/s", or just the time when the model doesn't report tokens.
@@ -264,9 +224,6 @@ struct AnswerView: View {
         guard let speed = turn.tokensPerSecond else { return time }
         return "\(time) - \(Int(speed.rounded()))tk/s"
     }
-
-    /// Scroll target that keeps the newest suggestion in view.
-    private static let autoAnswerEnd = "auto-answer-end"
 
     private static func formatted(_ answer: String) -> AttributedString {
         let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
@@ -288,46 +245,8 @@ struct AnswerView: View {
     }
 }
 
-/// 72 pt capsule: back, the thread's title, and stop while an answer streams.
-struct AnswerCompactBar: View {
-    let state: AppState
-    let thread: AnswerThread
-    let onBack: () -> Void
-
-    @State private var isRenaming = false
-
-    var body: some View {
-        HStack(spacing: 8) {
-            SurfaceButton("chevron.left") { onBack() }
-            Group {
-                if let turn = thread.turns.last, turn.isStreaming, turn.answer.isEmpty {
-                    ShimmerText(turn.status)
-                        .font(.system(size: 15, weight: .semibold))
-                        .lineLimit(1)
-                } else {
-                    EditableTitle(title: thread.displayTitle, isEditing: $isRenaming) { name in
-                        if let id = thread.chatID { state.rename(id, to: name) }
-                    }
-                }
-            }
-            .frame(maxWidth: .infinity)
-            if thread.isAnswering {
-                SurfaceButton("stop.fill", style: .prominent) { thread.stop() }
-                    .transition(.blurReplace)
-            } else {
-                ChatMoreMenu(state: state, thread: thread, isRenaming: $isRenaming, onLeave: onBack)
-                    .transition(.blurReplace)
-            }
-        }
-        .animation(SurfaceMotion.content, value: thread.isAnswering)
-        .padding(.horizontal, 18)
-        .padding(.vertical, 20)
-        .frame(width: 256, height: 72)
-    }
-}
-
-/// The chat's more menu: Rename and Delete above Settings. They're available once the chat has
-/// been saved; live-session threads are never saved as chats, so they get the plain menu.
+/// The chat's more menu: Rename and Delete above Settings, available once the chat has been
+/// saved.
 private struct ChatMoreMenu: View {
     let state: AppState
     let thread: AnswerThread
@@ -336,117 +255,56 @@ private struct ChatMoreMenu: View {
     let onLeave: () -> Void
 
     var body: some View {
-        if thread.isLive {
-            MoreMenu(state: state)
-        } else {
-            MoreMenu(state: state) {
-                Button("Rename", systemImage: "pencil") { isRenaming = true }
-                    .disabled(thread.chatID == nil)
-                Button("Delete", systemImage: "trash", role: .destructive) {
-                    guard let id = thread.chatID else { return }
-                    onLeave()
-                    state.delete([id])
-                }
+        MoreMenu(state: state) {
+            Button("Rename", systemImage: "pencil") { isRenaming = true }
                 .disabled(thread.chatID == nil)
+            Button("Delete", systemImage: "trash", role: .destructive) {
+                guard let id = thread.chatID else { return }
+                onLeave()
+                state.delete([id])
             }
+            .disabled(thread.chatID == nil)
         }
     }
 }
 
-/// A new summary the model wrote, shown before it replaces the session's: the session's title
-/// and date, the summary (streaming while it's written), then Cancel and Save.
-private struct SummaryProposalCard: View {
-    let proposal: AnswerThread.SummaryProposal
-    /// The summary so far, while it's being written.
-    let draft: String?
-    let save: () -> Void
-    let cancel: () -> Void
+/// The sites a web answer drew on, as one capsule: the first source's name and how many more.
+/// It opens a menu of every source, each opening its page.
+private struct WebSources: View {
+    let sources: [WebResult]
 
-    private var shape: RoundedRectangle { RoundedRectangle(cornerRadius: 22, style: .continuous) }
-    private var text: String? { proposal.text ?? draft.flatMap { $0.isEmpty ? nil : $0 } }
+    @Environment(\.openURL) private var openURL
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Text(proposal.title)
-                    .font(.body.weight(.semibold))
-                    .foregroundStyle(.white)
-                    .lineLimit(1)
-                Spacer(minLength: 8)
-                Text(proposal.time)
-                    .font(.subheadline)
-                    .foregroundStyle(.tertiary)
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 14)
-            // A square band across the top; only the card's own outer corners are rounded.
-            .background(Rectangle().fill(.white.opacity(0.06)))
-
-            VStack(alignment: .leading, spacing: 14) {
-                summary(for: proposal.status)
-                footer
-            }
-            .padding(16)
-        }
-        .background(.ultraThinMaterial, in: shape)
-        .clipShape(shape)
-        .animation(SurfaceMotion.content, value: proposal.status)
-    }
-
-    @ViewBuilder
-    private func summary(for status: AnswerThread.SummaryProposal.Status) -> some View {
-        if status == .failed {
-            Text("Couldn't write a new summary. The current one is unchanged.")
-                .font(.subheadline)
-                .foregroundStyle(.white.opacity(0.6))
-        } else if let text {
-            StreamingText(text, revealsInitialText: status == .writing)
-                .font(.subheadline)
-                .foregroundStyle(.white.opacity(status == .cancelled ? 0.4 : 0.85))
-                .textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        } else {
-            ShimmerText(String(localized: "Writing the new summary"))
-                .font(.subheadline)
-        }
-    }
-
-    @ViewBuilder
-    private var footer: some View {
-        switch proposal.status {
-        case .writing, .ready:
-            HStack(spacing: 10) {
-                Button(action: cancel) {
-                    Text("Cancel")
-                        .font(.body.weight(.semibold))
-                        .foregroundStyle(.white)
-                        .frame(maxWidth: .infinity, minHeight: 32, maxHeight: 32)
-                        .background(.white.opacity(0.12), in: Capsule())
-                        .contentShape(Capsule())
+        if let first = sources.first {
+            Menu {
+                ForEach(sources, id: \.url) { source in
+                    Button { openURL(source.url) } label: {
+                        Text(source.displayName)
+                        Text(source.title)
+                    }
                 }
-                Button(action: save) {
-                    Text("Save")
-                        .font(.body.weight(.semibold))
-                        .foregroundStyle(.black)
-                        .frame(maxWidth: .infinity, minHeight: 32, maxHeight: 32)
-                        .background(.white, in: Capsule())
-                        .contentShape(Capsule())
+            } label: {
+                HStack(spacing: 8) {
+                    Text(first.displayName)
+                        .lineLimit(1)
+                        .foregroundStyle(.white.opacity(0.75))
+                    if sources.count > 1 {
+                        Text("+\(sources.count - 1)")
+                            .foregroundStyle(.white.opacity(0.5))
+                    }
                 }
-                .disabled(proposal.status != .ready)
-                .opacity(proposal.status == .ready ? 1 : 0.5)
+                .font(.system(size: 13, weight: .medium))
+                .padding(.horizontal, 12)
+                .frame(height: 28)
+                .background(.white.opacity(0.08), in: Capsule())
+                .contentShape(Capsule())
             }
+            .menuStyle(.button)
+            .menuIndicator(.hidden)
             .buttonStyle(.plain)
-        case .saved:
-            Label("Saved to the session", systemImage: "checkmark")
-                .font(.subheadline)
-                .foregroundStyle(.white.opacity(0.6))
-        case .cancelled:
-            Text("Cancelled. The summary is unchanged.")
-                .font(.subheadline)
-                .foregroundStyle(.white.opacity(0.6))
-        case .failed:
-            EmptyView()
+            .fixedSize()
+            .help(sources.map(\.title).joined(separator: "\n"))
         }
     }
 }

@@ -144,18 +144,23 @@ final class SurfacePresenter: NSObject {
     /// The panel only accepts mouse events while the cursor is over the visible glass,
     /// or while a scroll gesture that started on the glass is still in progress.
     ///
-    /// The window controls float above the glass, so the strip between them and the glass, and
-    /// the controls themselves, count as being over the surface too; that keeps them showing
-    /// (and clickable) as the pointer moves up to them.
+    /// The window controls come out while the pointer is near the top of the glass. Once out,
+    /// the controls and the strip between them and the glass count as being over the surface
+    /// too; that keeps them showing (and clickable) as the pointer moves up to them.
     private func updateMousePassthrough() {
         if isScrolling { return }
         let location = NSEvent.mouseLocation
         let glass = glassScreenFrame
         let controls = screenFrame(of: state.controlsFrame)
-        let reach = controls.isEmpty
-            ? glass
-            : glass.union(controls).union(CGRect(x: controls.minX, y: glass.maxY, width: controls.width, height: controls.minY - glass.maxY))
-        let over = state.isPresented && (glass.contains(location) || (state.isHovering && reach.contains(location)))
+        let band = min(SurfaceWindowControls.revealBand, glass.height)
+        let topBand = CGRect(x: glass.minX, y: glass.maxY - band, width: glass.width, height: band)
+        let controlsReach = controls.isEmpty
+            ? CGRect.null
+            : controls.union(CGRect(x: controls.minX, y: glass.maxY, width: controls.width, height: controls.minY - glass.maxY))
+        let showsControls = state.isPresented
+            && (topBand.contains(location) || (state.showsControls && controlsReach.contains(location)))
+        let over = state.isPresented && (glass.contains(location) || (state.showsControls && controlsReach.contains(location)))
+        if state.showsControls != showsControls { state.showsControls = showsControls }
         if state.isHovering != over { state.isHovering = over }
         let ignores = !over
         if panel.ignoresMouseEvents != ignores {

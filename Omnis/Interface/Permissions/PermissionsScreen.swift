@@ -1,8 +1,7 @@
-import AVFoundation
 import SwiftUI
 
-/// Shown once, after a model is downloaded: asks for Screen Recording (screen context and call
-/// audio), then the microphone, one card at a time. Steps already granted are skipped, and
+/// Shown once, after a model is downloaded: asks for Screen Recording (screen context), one
+/// card at a time. Steps already granted are skipped, and
 /// Omnis opens after the last one.
 struct PermissionsScreen: View {
     let state: AppState
@@ -36,33 +35,29 @@ struct PermissionsScreen: View {
 
 /// One permission Omnis asks for during setup, in order.
 enum PermissionStep: CaseIterable, Hashable {
-    case screen, microphone
+    case screen
 
     var symbol: String {
         switch self {
         case .screen: "inset.filled.rectangle.and.person.filled"
-        case .microphone: "microphone.fill"
         }
     }
 
     var title: LocalizedStringKey {
         switch self {
         case .screen: "Allow Screen Context"
-        case .microphone: "Allow Microphone"
         }
     }
 
     var message: LocalizedStringKey {
         switch self {
-        case .screen: "Allow Omnis to see your screen and hear your meetings and audio."
-        case .microphone: "Allow Omnis to hear you in sessions. You can pause the use of your microphone."
+        case .screen: "Allow Omnis to see your screen."
         }
     }
 
     var isGranted: Bool {
         switch self {
         case .screen: ScreenRecordingPermission.isGranted
-        case .microphone: AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
         }
     }
 
@@ -71,7 +66,6 @@ enum PermissionStep: CaseIterable, Hashable {
     func request() async {
         switch self {
         case .screen: ScreenRecordingPermission.ensure()
-        case .microphone: _ = await AVCaptureDevice.requestAccess(for: .audio)
         }
     }
 

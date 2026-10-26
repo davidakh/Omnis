@@ -10,12 +10,22 @@ enum AskEvent {
     case screenUnavailable(ScreenCaptureError)
     /// The answer looked at the screen: the app (and window) it read.
     case screenIncluded(String)
+    /// The answer searched the web: the sources to show under it.
+    case webIncluded([WebResult])
+    /// The web was meant to be searched but couldn't be. Shown under the answer.
+    case webUnavailable(String)
     /// How fast the answer was written: tokens generated per second, from its first word to
     /// its last. Sent once it's done, when the model reports its token count.
     case speed(tokensPerSecond: Double)
-    /// The model wants to change a session's summary: the chat writes a proposal for the user to
-    /// save or cancel.
-    case summaryProposal(sessionID: UUID, request: String, fromTranscript: Bool)
+}
+
+/// What was gathered for a question besides the conversation: the screen and web results, or
+/// why each one that was meant to be included is missing.
+private struct GatheredContext {
+    var screen: ScreenSnapshot?
+    var screenNote: String?
+    var web: WebContext?
+    var webNote: String?
 }
 
 /// Answers a question with the user's chosen model, from context gathered by
@@ -31,16 +41,13 @@ final class AskService {
         self.settings = settings
     }
 
-    /// - Parameter live: the live session's transcript when asking during a session.
     func answer(
         _ question: String,
-        history: [AskTurn],
-        live: (startedAt: Date, lines: [LiveLine])?
+        history: [AskTurn]
     ) -> AsyncThrowingStream<AskEvent, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    let screen = await captureScreenIfRelevant(question, previous: history.last, into: continuation)
                     let model: ResolvedModel
                     do {
                         model = try await resolver.resolve()
@@ -49,14 +56,20 @@ final class AskService {
                         // been downloaded: answer with Apple's on-device model.
                         model = try resolver.onDevice()
                     }
+                    // Start loading a downloaded model while the context is gathered.
+                    // `respond` waits for the same load, which is shared and returns at once when done.
+                    if let load = model.load {
+                        Task { try? await load.run() }
+                    }
+                    let gathered = await gatherContext(question, previous: history.last, into: continuation)
                     do {
-                        try await respond(question, history: history, live: live, screen: screen, model: model, into: continuation)
+                        try await respond(question, history: history, gathered: gathered, model: model, into: continuation)
                     } catch where [.applePrivateCloud, .local].contains(model.provider) && !(error is CancellationError) {
                         // Network, quota, service or system failures (or a downloaded model that
                         // won't load): retry on device rather than leaving the user without an answer.
                         continuation.yield(.status(String(localized: "Answering on device")))
                         let fallback = try resolver.onDevice()
-                        try await respond(question, history: history, live: live, screen: screen, model: fallback, into: continuation)
+                        try await respond(question, history: history, gathered: gathered, model: fallback, into: continuation)
                     }
                     continuation.finish()
                 } catch {
@@ -67,13 +80,29 @@ final class AskService {
         }
     }
 
-    /// Captures the screen only when the question is about it, so unrelated questions stay fast
-    /// and never trigger the Screen Recording prompt.
-    private func captureScreenIfRelevant(
+    /// Decides what the question needs, then captures the screen and searches the web at once.
+    /// Each is only used when the question calls for it, so unrelated questions stay fast and
+    /// never trigger the Screen Recording prompt.
+    private func gatherContext(
         _ question: String,
         previous: AskTurn?,
         into continuation: AsyncThrowingStream<AskEvent, Error>.Continuation
-    ) async -> (snapshot: ScreenSnapshot?, note: String?) {
+    ) async -> GatheredContext {
+        let needs = await ContextPlanner(resolver: resolver).plan(
+            question, previous: previous, allowsScreen: settings.useScreen, allowsWeb: settings.useWeb
+        )
+        async let screen = captureScreen(needs.screen, for: question, into: continuation)
+        async let web = searchWeb(needs, into: continuation)
+        let (snapshot, screenNote) = await screen
+        let (results, webNote) = await web
+        return GatheredContext(screen: snapshot, screenNote: screenNote, web: results, webNote: webNote)
+    }
+
+    private func captureScreen(
+        _ needed: Bool,
+        for question: String,
+        into continuation: AsyncThrowingStream<AskEvent, Error>.Continuation
+    ) async -> (ScreenSnapshot?, String?) {
         guard settings.useScreen else {
             // Plainly about the screen while it's switched off: tell the model it can't see it,
             // so it says so instead of inventing what's there, and show the user why.
@@ -81,8 +110,8 @@ final class AskService {
             continuation.yield(.screenUnavailable(.turnedOff))
             return (nil, ScreenCaptureError.turnedOff.localizedDescription)
         }
-        guard await ScreenRelevance(index: builder.index, resolver: resolver).needsScreen(question, previous: previous) else { return (nil, nil) }
-        continuation.yield(.status(String(localized: "Looking at the screen")))
+        guard needed else { return (nil, nil) }
+        continuation.yield(.status(String(localized: "Looking at your Screen")))
         do {
             let snapshot = try await ScreenContextProvider.capture()
             let source = snapshot.windowTitle.map { "\(snapshot.appName) · \($0)" } ?? snapshot.appName
@@ -96,11 +125,32 @@ final class AskService {
         }
     }
 
+    private func searchWeb(
+        _ needs: ContextNeeds,
+        into continuation: AsyncThrowingStream<AskEvent, Error>.Continuation
+    ) async -> (WebContext?, String?) {
+        guard needs.usesWeb else { return (nil, nil) }
+        continuation.yield(.status(needs.searchQuery == nil
+            ? String(localized: "Reading the Page")
+            : String(localized: "Searching the Web")))
+        do {
+            let web = try await WebSearch.context(query: needs.searchQuery, links: needs.links)
+            continuation.yield(.webIncluded(web.sources))
+            return (web, nil)
+        } catch {
+            // Answer anyway: the model is told the search failed, so it doesn't present
+            // remembered facts as current, and the user sees why.
+            let reason = (error as? WebSearchError)?.localizedDescription
+                ?? WebSearchError.failed(error.localizedDescription).localizedDescription
+            continuation.yield(.webUnavailable(reason))
+            return (nil, reason)
+        }
+    }
+
     private func respond(
         _ question: String,
         history: [AskTurn],
-        live: (startedAt: Date, lines: [LiveLine])?,
-        screen: (snapshot: ScreenSnapshot?, note: String?),
+        gathered: GatheredContext,
         model: ResolvedModel,
         into continuation: AsyncThrowingStream<AskEvent, Error>.Continuation
     ) async throws {
@@ -118,45 +168,26 @@ final class AskService {
         }
 
         // A model that can't see images gets a description of the screen alongside its text.
-        var snapshot = screen.snapshot
+        var snapshot = gathered.screen
         if var shot = snapshot, !model.supportsVision {
-            continuation.yield(.status(String(localized: "Looking at the screen")))
+            continuation.yield(.status(String(localized: "Looking at your Screen")))
             shot.visualDescription = await ScreenContextProvider.describe(shot.image)
             snapshot = shot
             try Task.checkCancellation()
         }
 
-        continuation.yield(.status(String(localized: live == nil ? "Searching your sessions" : "Looking at the transcript")))
         let context = await builder.build(
             question: question,
-            history: history,
-            live: live,
             screen: snapshot,
-            screenNote: screen.note,
-            model: model,
-            canLookUp: model.supportsLookUp
+            screenNote: gathered.screenNote,
+            web: gathered.web,
+            webNote: gathered.webNote,
+            model: model
         )
         try Task.checkCancellation()
 
-        // Models that can call tools look details up themselves: a keyword search through a
-        // session's transcript (no model, milliseconds) or its summary. Capped per answer, so a
-        // question can't turn into minutes of searching. Each lookup shows as the status.
-        let budget = LookupBudget(limit: Self.lookupsPerAnswer)
-        let listed: @MainActor @Sendable () -> [Session] = { [index = builder.index] in
-            index.recentSessions(limit: ContextBuilder.lookupCatalogSize)
-        }
-        var tools: [any Tool] = model.supportsLookUp ? [
-            SearchTranscriptTool(sessions: listed, budget: budget) { continuation.yield(.status($0)) },
-            ReadSummaryTool(sessions: listed, budget: budget) { continuation.yield(.status($0)) }
-        ] : []
-        if model.supportsLookUp {
-            tools.append(ReviseSummaryTool(sessions: listed, revise: { session, request, fromTranscript in
-                continuation.yield(.summaryProposal(sessionID: session.id, request: request, fromTranscript: fromTranscript))
-            }) { continuation.yield(.status($0)) })
-        }
-
         continuation.yield(.status(String(localized: "Thinking")))
-        let session = Self.session(model: model, instructions: context.instructions, history: history, tools: tools)
+        let session = Self.session(model: model, instructions: context.instructions, history: history)
         let stream = if let image = context.image {
             session.streamResponse(options: Self.options(for: model)) {
                 context.prompt
@@ -190,6 +221,15 @@ final class AskService {
         if tokens > 0, seconds > 0 {
             continuation.yield(.speed(tokensPerSecond: Double(tokens) / seconds))
         }
+        // How fast a downloaded model read this prompt, so later answers size their context
+        // to keep the wait before the first word short.
+        if model.provider == .local, let firstWord, let option = settings.localModel {
+            LocalModelSpeed.record(
+                tokens: session.usage.input.totalTokenCount,
+                seconds: firstWord.timeIntervalSince(started),
+                for: option
+            )
+        }
     }
 
     /// Answers stick close to the context: a low temperature keeps models from wandering into
@@ -203,30 +243,36 @@ final class AskService {
         )
     }
 
-    /// Lookups (searches and summaries) one answer may make.
-    static let lookupsPerAnswer = 3
-
     /// How many earlier turns a follow-up carries.
     static let historyTurns = 3
+    /// The same for a downloaded model, and how much of each earlier answer it keeps.
+    private static let localHistoryTurns = 2
+    private static let localHistoryAnswerLength = 700
 
     /// A session that already holds the thread's earlier turns as real prompts and responses,
     /// so follow-ups read as a conversation rather than as more context to quote from.
-    private static func session(model: ResolvedModel, instructions: String, history: [AskTurn], tools: [any Tool]) -> LanguageModelSession {
+    private static func session(model: ResolvedModel, instructions: String, history: [AskTurn]) -> LanguageModelSession {
         guard !history.isEmpty else {
-            return LanguageModelSession(model: model.model, tools: tools, instructions: instructions)
+            return LanguageModelSession(model: model.model, instructions: instructions)
         }
         func text(_ content: String) -> [Transcript.Segment] { [.text(Transcript.TextSegment(content: content))] }
         var entries: [Transcript.Entry] = [
             .instructions(Transcript.Instructions(
                 segments: text(instructions),
-                toolDefinitions: tools.map { Transcript.ToolDefinition(tool: $0) }
+                toolDefinitions: []
             ))
         ]
-        for turn in history.suffix(historyTurns) {
+        // A downloaded model reads every earlier turn before its first word, so it carries fewer,
+        // with each answer cut to its opening (enough to know what was said).
+        let isLocal = model.provider == .local
+        for turn in history.suffix(isLocal ? localHistoryTurns : historyTurns) {
+            let answer = isLocal && turn.answer.count > localHistoryAnswerLength
+                ? String(turn.answer.prefix(localHistoryAnswerLength)) + "…"
+                : turn.answer
             entries.append(.prompt(Transcript.Prompt(segments: text(turn.question))))
-            entries.append(.response(Transcript.Response(assetIDs: [], segments: text(turn.answer))))
+            entries.append(.response(Transcript.Response(assetIDs: [], segments: text(answer))))
         }
-        return LanguageModelSession(model: model.model, tools: tools, transcript: Transcript(entries: entries))
+        return LanguageModelSession(model: model.model, transcript: Transcript(entries: entries))
     }
 
     /// A short, user-facing explanation for a failed answer.

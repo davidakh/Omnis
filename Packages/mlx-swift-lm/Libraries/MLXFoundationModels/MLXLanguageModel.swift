@@ -352,6 +352,11 @@ public struct MLXLanguageModel: FoundationModels.LanguageModel, Sendable {
     /// fire-and-forget by ``Executor/prewarm(model:transcript:)``, reached
     /// publicly through `session.prewarm()`. Safe to call multiple times and
     /// concurrently; subsequent calls reuse the cached container.
+    /// About 100 tokens of plain text for `warmUp()`.
+    private static let warmUpPrompt = Array(
+        repeating: "Warm up the model by reading this sentence.", count: 12
+    ).joined(separator: " ")
+
     func warmUp() async throws {
         // Distinguish a warmup of an already-present model (suppress the
         // spurious `.available → .downloading → .available` flip) from a
@@ -384,10 +389,12 @@ public struct MLXLanguageModel: FoundationModels.LanguageModel, Sendable {
         _ = try await Self.makeGrammarTokenizer(
             modelID: modelID, tokenizer: tokenizer)
 
-        // Force Metal shader JIT with a minimal 1-token generate, run inside
-        // `perform` so the forward pass + synchronize serialize against any
-        // concurrent `respond`. `maxTokens: 1` makes the stream end on
-        // its own; we consume it fully (no early break) so generation runs to
+        // Force Metal shader JIT with a short generate, run inside `perform` so
+        // the forward pass + synchronize serialize against any concurrent
+        // `respond`. The prompt is long enough to reach prompt-width kernels
+        // (some models switch kernels above 64 rows), and a few tokens run the
+        // single-row decode step too. `maxTokens` makes the stream end on its
+        // own; we consume it fully (no early break) so generation runs to
         // completion and leaves no dangling GPU work to race the teardown sync.
         try await container.perform { context in
             // Exactly one synchronize on every exit path (success or throw),
@@ -395,8 +402,8 @@ public struct MLXLanguageModel: FoundationModels.LanguageModel, Sendable {
             // pre-forward-pass throw this just synchronizes an idle stream.
             defer { Stream.gpu.synchronize() }
             let input = try await context.processor.prepare(
-                input: UserInput(chat: [.user("warmup")]))
-            let params = GenerateParameters(maxTokens: 1)
+                input: UserInput(chat: [.user(Self.warmUpPrompt)]))
+            let params = GenerateParameters(maxTokens: 3)
             for await _ in try MLXLMCommon.generate(
                 input: input, parameters: params, context: context
             ) {

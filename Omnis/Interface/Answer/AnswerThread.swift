@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// A question thread: each answer streams in from `AskService`, and follow-ups carry the
-/// earlier turns as context.
+/// earlier turns as context. Each answered turn is saved to the thread's chat.
 ///
 /// Lives in `AppState.Mode` rather than in a view, so the thread keeps streaming while the
 /// surface swaps between the chat and its compact bar.
@@ -21,6 +21,10 @@ final class AnswerThread: Hashable {
         var screenNotice: ScreenCaptureError?
         /// The app (and window) the answer looked at, when it used the screen.
         var screenSource: String?
+        /// The web pages the answer drew on, when it searched the web.
+        var webSources: [WebResult] = []
+        /// Set when the web should have been searched but couldn't be.
+        var webNotice: String?
         /// When it was asked, and how long the answer took once it was done.
         let askedAt = Date.now
         var duration: TimeInterval?
@@ -33,30 +37,40 @@ final class AnswerThread: Hashable {
     var draft = ""
     /// Bumped each time an answer settles, so the chat can refocus its field.
     private(set) var finishedCount = 0
-    /// The name the user gave the chat, if they renamed it.
-    var customTitle: String?
 
     @ObservationIgnored private unowned let state: AppState
     @ObservationIgnored private var streamTask: Task<Void, Never>?
+    /// The saved chat, once the first answer is saved. Observed, so Rename and Delete become
+    /// available when it appears.
+    private(set) var chatID: UUID?
+    /// Reopened from the conversations list, so leaving returns there.
+    let isResumed: Bool
 
     /// Starts answering `question` right away, or opens empty to wait for one.
     init(state: AppState, question: String?) {
         self.state = state
+        self.isResumed = false
         if let question { ask(question) }
+    }
+
+    /// Reopens a saved chat with its earlier turns, so the conversation can continue; new turns
+    /// are saved to the same chat.
+    init(state: AppState, resuming chat: Chat) {
+        self.state = state
+        self.isResumed = true
+        self.chatID = chat.id
+        turns = chat.orderedTurns.map { Turn(question: $0.question, answer: $0.answer, isStreaming: false) }
     }
 
     var isAnswering: Bool { turns.last?.isStreaming ?? false }
 
-    /// The chat's name once renamed; until then its first question.
-    var displayTitle: String {
-        customTitle ?? turns.first?.question ?? ""
+    var chat: Chat? {
+        chatID.flatMap { id in state.store.chats.first { $0.id == id } }
     }
 
-    /// Renames the chat; an empty name is ignored.
-    func rename(to title: String) {
-        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        customTitle = trimmed
+    /// The saved chat's title (generated, or the user's), else the first question.
+    var displayTitle: String {
+        chat?.title ?? turns.first?.question ?? ""
     }
 
     /// The conversation as plain text for sharing: each question, then its answer.
@@ -71,7 +85,7 @@ final class AnswerThread: Hashable {
         streamTask?.cancel()
         let history = turns
             .filter { !$0.isStreaming && !$0.failed }
-            .map { AskTurn(question: $0.question, answer: $0.answer, usedScreen: $0.screenSource != nil) }
+            .map { AskTurn(question: $0.question, answer: $0.answer, usedScreen: $0.screenSource != nil, usedWeb: !$0.webSources.isEmpty) }
         turns.append(Turn(question: question))
         let index = turns.count - 1
 
@@ -86,6 +100,10 @@ final class AnswerThread: Hashable {
                         turns[index].screenNotice = reason
                     case .screenIncluded(let source):
                         turns[index].screenSource = source
+                    case .webIncluded(let sources):
+                        turns[index].webSources = sources
+                    case .webUnavailable(let reason):
+                        turns[index].webNotice = reason
                     case .speed(let tokensPerSecond):
                         turns[index].tokensPerSecond = tokensPerSecond
                     case .text(let text):
@@ -126,6 +144,20 @@ final class AnswerThread: Hashable {
     private func finish(_ index: Int) {
         turns[index].duration = Date.now.timeIntervalSince(turns[index].askedAt)
         withAnimation(SurfaceMotion.content) { turns[index].isStreaming = false }
+        let turn = turns[index]
+        if !turn.failed, !turn.answer.isEmpty {
+            let isNewChat = chatID == nil
+            let id = state.store.recordTurn(chatID: chatID, question: turn.question, answer: turn.answer)
+            chatID = id
+            // A new chat starts out named after its question; give it a short title.
+            if isNewChat {
+                Task { [store = state.store, titler = ChatTitler(resolver: state.resolver)] in
+                    if let title = await titler.title(question: turn.question, answer: turn.answer) {
+                        store.setGeneratedTitle(title, for: id)
+                    }
+                }
+            }
+        }
         finishedCount += 1
     }
 

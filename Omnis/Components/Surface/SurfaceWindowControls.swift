@@ -1,8 +1,8 @@
 import SwiftUI
 
 /// Quit, minimize and expand, as three colored dots on a small glass capsule that floats
-/// centered above the surface while the pointer is over it. Minimize and expand dim when the
-/// surface is already at that size.
+/// centered above the surface while the pointer is near its top. Minimize and expand dim when
+/// the surface is already at that size.
 struct SurfaceWindowControls: View {
     var onQuit: () -> Void
     /// Nil when the surface is already at its smallest.
@@ -12,7 +12,9 @@ struct SurfaceWindowControls: View {
 
     static let height: CGFloat = 32
     /// Space between the capsule and the top of the surface.
-    static let gap: CGFloat = 4
+    static let gap: CGFloat = 6
+    /// The band along the top of the glass where the pointer brings the controls out.
+    static let revealBand: CGFloat = 44
 
     var body: some View {
         HStack(spacing: 4) {
@@ -64,7 +66,7 @@ struct SurfaceWindowControls: View {
         var body: some View {
             Button { action?() } label: {
                 image
-                    .foregroundStyle(.black.opacity(0.52))
+                    .foregroundStyle(.black.opacity(0.32))
                     .blendMode(.plusDarker)
                     .frame(width: Self.size, height: Self.size)
                     .background(Circle().fill(color.fill))

@@ -3,7 +3,7 @@ import SwiftUI
 /// Muted text with a soft light sweeping across it, for "working on it" states.
 ///
 /// Each status stays up for a moment before the next replaces it, so one that would only flash
-/// by ("Thinking" → "Looking at the screen" → "Thinking") is skipped instead of flickering.
+/// by ("Thinking" → "Looking at the Screen" → "Thinking") is skipped instead of flickering.
 struct ShimmerText: View {
     let text: String
     init(_ text: String) { self.text = text }

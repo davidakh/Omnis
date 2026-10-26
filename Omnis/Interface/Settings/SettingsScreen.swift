@@ -213,7 +213,7 @@ private struct LaunchAtLoginRow: View {
     }
 }
 
-/// Which model answers questions and writes summaries: an intro card, then the agents to choose
+/// Which model answers questions: an intro card, then the agents to choose
 /// from (Apple Foundation Models, or Claude or ChatGPT with the user's own API key), then the
 /// chosen agent's options.
 private struct ModelSettingsSection: View {
@@ -277,7 +277,7 @@ private struct ModelSettingsSection: View {
                         state.useDownloadedModel(model)
                     }
                 }
-                SettingsNote("Answers chats and writes summaries on this Mac with a model downloaded from Hugging Face. Live notes and highlights use Apple's on-device model. Nothing leaves your device.")
+                SettingsNote("Answers chats on this Mac with a model downloaded from Hugging Face. Nothing leaves your device.")
             }
             .transition(.blurReplace)
         case .appleOnDevice, .applePrivateCloud:
@@ -311,7 +311,7 @@ private struct ModelSettingsSection: View {
                     .fixedSize()
                 }
                 APIKeyField(settings: settings, provider: .anthropic) { keysVersion += 1 }
-                SettingsNote("Questions, transcripts and screen context are sent to Anthropic with your API key.")
+                SettingsNote("Questions and screen context are sent to Anthropic with your API key.")
             }
             .transition(.blurReplace)
         case .openAI:
@@ -323,7 +323,7 @@ private struct ModelSettingsSection: View {
                         .frame(width: 160)
                 }
                 APIKeyField(settings: settings, provider: .openAI) { keysVersion += 1 }
-                SettingsNote("Questions, transcripts and screen context are sent to OpenAI with your API key.")
+                SettingsNote("Questions and screen context are sent to OpenAI with your API key.")
             }
             .transition(.blurReplace)
         }
@@ -486,7 +486,7 @@ private struct IntelligenceCard: View {
                     .font(.body)
                     .fontWeight(.semibold)
                     .foregroundStyle(.primary)
-                Text("Supercharge your Omnis experience with built in intelligence and your choice of model. Third-party models will have access to your sessions and recordings.")
+                Text("Supercharge your Omnis experience with built in intelligence and your choice of model. Third-party models will have access to your chats and screen context.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

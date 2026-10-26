@@ -101,6 +101,8 @@ struct SurfaceTabBar<Value: Hashable>: View {
                 VStack(spacing: 1) {
                     Image(systemName: tab.symbol)
                         .font(.system(size: 14, weight: .medium))
+                        .symbolVariant(tab.value == selection ? .fill : .none)
+                        .animation(.smooth(duration: 0.2), value: selection)
                     Text(tab.title)
                         .font(.system(size: 8, weight: .medium))
                         .lineLimit(1)

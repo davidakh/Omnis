@@ -3,7 +3,7 @@ import SwiftUI
 enum SurfaceMetrics {
     static let maxSize = CGSize(width: 648, height: 780)   // room for the 620×712 settings and the window controls above it
     static let minSide: CGFloat = 48           // compact capsule height (32 pt button + 8 pt padding each side)
-    static let maxCornerRadius: CGFloat = 36   // rounded-rect radius; short surfaces stay capsules since radius = min(side / 2, this)
+    static let maxCornerRadius: CGFloat = 40   // rounded-rect radius; short surfaces stay capsules since radius = min(side / 2, this)
     static let overshootMargin: CGFloat = 24   // room for spring overshoot inside the panel
     static let dockGap: CGFloat = 12           // gap between the glass and the top of the Dock
     static let grabberSize = CGSize(width: 32, height: 4)

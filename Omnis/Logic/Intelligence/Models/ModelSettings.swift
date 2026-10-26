@@ -61,19 +61,15 @@ final class ModelSettings {
         didSet { defaults.set(openAIModel, forKey: Keys.openAIModel) }
     }
 
-    // Context sources, chosen from the live bar's more menu. All on by default.
+    // Context sources. On by default.
 
-    /// Transcribe (and record) the microphone during sessions.
-    var useMicrophone: Bool {
-        didSet { defaults.set(useMicrophone, forKey: Keys.useMicrophone) }
-    }
-    /// Transcribe (and record) the Mac's audio output (call participants, videos).
-    var useSystemAudio: Bool {
-        didSet { defaults.set(useSystemAudio, forKey: Keys.useSystemAudio) }
-    }
     /// Let answers look at the screen when a question is about it.
     var useScreen: Bool {
         didSet { defaults.set(useScreen, forKey: Keys.useScreen) }
+    }
+    /// Let answers search the web when a question needs current or specific facts.
+    var useWeb: Bool {
+        didSet { defaults.set(useWeb, forKey: Keys.useWeb) }
     }
 
     @ObservationIgnored private let defaults: UserDefaults
@@ -86,9 +82,8 @@ final class ModelSettings {
         localModelID = defaults.string(forKey: Keys.localModelID)
         anthropicModel = defaults.string(forKey: Keys.anthropicModel) ?? Self.anthropicModels[0].id
         openAIModel = defaults.string(forKey: Keys.openAIModel) ?? "gpt-5"
-        useMicrophone = defaults.object(forKey: Keys.useMicrophone) as? Bool ?? true
-        useSystemAudio = defaults.object(forKey: Keys.useSystemAudio) as? Bool ?? true
         useScreen = defaults.object(forKey: Keys.useScreen) as? Bool ?? true
+        useWeb = defaults.object(forKey: Keys.useWeb) as? Bool ?? true
     }
 
     func apiKey(for provider: ModelProvider) -> String? {
@@ -109,9 +104,8 @@ final class ModelSettings {
         static let localModelID = "model.local.id"
         static let anthropicModel = "model.anthropic.id"
         static let openAIModel = "model.openai.id"
-        static let useMicrophone = "context.microphone"
-        static let useSystemAudio = "context.systemAudio"
         static let useScreen = "context.screen"
+        static let useWeb = "context.web"
     }
 }
 
