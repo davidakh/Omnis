@@ -7,9 +7,9 @@ import SwiftUI
 final class AppState {
     enum Mode: Hashable {
         case expanded
-        /// The saved chats list.
-        case conversations
-        case answer(AnswerThread)
+        /// The saved chats list, and its compact bar.
+        case conversations, conversationsCompact
+        case answer(AnswerThread), answerCompact(AnswerThread)
         /// Settings, opened from any more menu; remembers the screen to return to.
         indirect case settings(Mode)
         /// Downloading a model, before Omnis can be used.
@@ -20,7 +20,7 @@ final class AppState {
 
     var mode: Mode = .expanded {
         didSet {
-            // A thread that's been left (not just covered by settings) stops answering.
+            // A thread that's been left (not just compacted, or covered by settings) stops answering.
             if let old = oldValue.thread, old !== mode.thread { old.cancel() }
         }
     }
@@ -59,8 +59,8 @@ final class AppState {
 
     // MARK: Conversations list
 
-    /// The list's tabs: projects, the saved chats, or scheduled chats.
-    enum ChatsTab { case projects, conversations, scheduled }
+    /// The list's tabs: the saved chats, research, or scheduled chats.
+    enum ChatsTab { case conversations, research, scheduled }
     var chatsTab: ChatsTab = .conversations {
         didSet {
             guard chatsTab != oldValue else { return }
@@ -118,6 +118,8 @@ final class AppState {
     }
 
     func delete(_ ids: Set<UUID>) {
+        // Deleting the chat open beside the sidebar leaves it for the list.
+        if let open = mode.thread?.chatID, ids.contains(open) { showConversations() }
         store.delete(ids)
         selection.subtract(ids)
     }
@@ -165,10 +167,10 @@ final class AppState {
         mode = .expanded
     }
 
-    /// Starts over on a clean, empty expanded ask.
+    /// Opens a blank chat beside the list, waiting for its first question. (The ask bar is
+    /// only the quick way in.)
     func newChat() {
-        text = ""
-        mode = .expanded
+        mode = .answer(AnswerThread(state: self, question: nil, fromList: true))
     }
 
     /// Reopens a saved chat as the conversation itself, ready for a follow-up.
@@ -237,7 +239,7 @@ extension AppState.Mode {
     /// The question thread this screen shows, if any.
     var thread: AnswerThread? {
         switch self {
-        case .answer(let thread): thread
+        case .answer(let thread), .answerCompact(let thread): thread
         case .settings(let previous): previous.thread
         default: nil
         }

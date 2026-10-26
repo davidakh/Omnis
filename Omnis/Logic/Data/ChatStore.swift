@@ -68,6 +68,14 @@ final class ChatStore {
         save()
     }
 
+    /// Keeps the summary of a chat's earlier turns, so it's there when the chat is reopened.
+    func setMemory(_ memory: ConversationMemory, for id: UUID) {
+        guard let chat = chat(withID: id) else { return }
+        chat.summary = memory.summary
+        chat.summarizedTurns = memory.coveredTurns
+        save()
+    }
+
     func rename(_ id: UUID, to title: String) {
         guard let chat = chat(withID: id) else { return }
         chat.title = title

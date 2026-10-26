@@ -24,8 +24,13 @@ struct ResolvedModel {
     /// The longest side, in pixels, of a screenshot sent to the model. Image tokens grow with
     /// the area, and a downloaded model reads them all before its first word.
     var maximumImageDimension: Int? = nil
+    /// The same model able to think before it answers, when it can. A downloaded model needs
+    /// its own instance with thinking declared (it shares the loaded weights); cloud models
+    /// take a reasoning level on each request. Nil for Apple's on-device model.
+    var thinkingModel: (any LanguageModel)? = nil
 
     var answerBudget: Int { chatBudget ?? promptBudget }
+    var canThink: Bool { thinkingModel != nil }
 
     var supportsVision: Bool { model.capabilities.contains(.vision) }
     var supportsGuidedGeneration: Bool { model.capabilities.contains(.guidedGeneration) }
@@ -107,29 +112,37 @@ struct ModelResolver {
                 provider: .applePrivateCloud,
                 model: model,
                 promptBudget: contextSize - Self.privateCloudReserve,
-                charactersPerToken: 3.5
+                charactersPerToken: 3.5,
+                thinkingModel: model
             )
 
         case .anthropic:
             guard let key = settings.apiKey(for: .anthropic) else {
                 throw ModelUnavailableError.missingAPIKey(.anthropic)
             }
+            let model = AnthropicLanguageModel(modelID: settings.anthropicModel, apiKey: key)
             return ResolvedModel(
                 provider: .anthropic,
-                model: AnthropicLanguageModel(modelID: settings.anthropicModel, apiKey: key),
+                model: model,
                 promptBudget: Self.cloudPromptBudget,
-                charactersPerToken: 4
+                charactersPerToken: 4,
+                // Haiku 4.5 takes no effort level, so how much it thinks can't be steered.
+                thinkingModel: settings.anthropicModel.hasPrefix("claude-haiku") ? nil : model
             )
 
         case .openAI:
             guard let key = settings.apiKey(for: .openAI) else {
                 throw ModelUnavailableError.missingAPIKey(.openAI)
             }
+            let model = OpenAILanguageModel(modelID: settings.openAIModel, apiKey: key)
+            // Only reasoning models (GPT-5, the o series) accept a reasoning effort.
+            let reasons = ["gpt-5", "o1", "o3", "o4"].contains { settings.openAIModel.hasPrefix($0) }
             return ResolvedModel(
                 provider: .openAI,
-                model: OpenAILanguageModel(modelID: settings.openAIModel, apiKey: key),
+                model: model,
                 promptBudget: Self.cloudPromptBudget,
-                charactersPerToken: 4
+                charactersPerToken: 4,
+                thinkingModel: reasons ? model : nil
             )
         }
     }
@@ -167,7 +180,10 @@ struct ModelResolver {
             maximumAnswerTokens: 800,
             // A third (or, on a tight budget, a sixth) of the image tokens of a full-size
             // capture; the screen's text still arrives in full from text recognition.
-            maximumImageDimension: chatBudget >= 3_000 ? 1024 : 768
+            maximumImageDimension: chatBudget >= 3_000 ? 1024 : 768,
+            // Thinking on, for questions that need it. MLX caches loaded models by id, so
+            // this shares the weights above rather than loading them twice.
+            thinkingModel: LocalModel.languageModel(at: option.directory, vision: option.supportsVision, reasoning: true)
         )
     }
 

@@ -84,10 +84,10 @@ struct AnswerView: View {
                     .lineLimit(1...5)
                     .focused($fieldFocused)
                     .onSubmit(sendFollowUp)
-                    .padding(.horizontal, 14)
+                    .padding(.horizontal, 12)
                     .padding(.vertical, 8)
                     .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
-                    .glassEffect(.clear.interactive(), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .glassEffect(.clear.interactive(), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
                     .transition(.blurReplace)
                 SurfaceButton("arrow.up", style: .prominent) { sendFollowUp() }
                     .transition(.blurReplace)
@@ -155,18 +155,33 @@ struct AnswerView: View {
                 .frame(maxWidth: .infinity, alignment: .trailing)
                 .padding(.leading, 40)
 
-            // The screen is only read when the question calls for it; say when it was.
-            if turn.screenSource != nil, turn.screenNotice == nil {
-                Text("Viewed Screen")
+            // What Omnis said it's doing, kept above the answer once it arrives.
+            if let preface = turn.preface {
+                StreamingText(AttributedString(preface), revealsInitialText: turn.isStreaming)
+                    .font(Self.font)
+                    .environment(\.lineHeight, Self.lineHeight)
+                    .foregroundStyle(.white)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .transition(.blurReplace)
+            }
+
+            // Then what happened before the answer ("Thought for 10 Seconds", "Read the
+            // Contents of Messages"), once the answer has begun.
+            if !turn.answer.isEmpty, let step = turn.step {
+                Text(step)
                     .font(.system(size: 11))
                     .foregroundStyle(.white.opacity(0.45))
                     .transition(.blurReplace)
             }
 
             if turn.answer.isEmpty && turn.isStreaming {
-                ShimmerText(turn.status)
-                    .font(Self.font)
-                    .transition(.blurReplace)
+                HStack(spacing: 8) {
+                    ShimmerText(turn.status)
+                    ProgressPercent(percent: turn.progress)
+                }
+                .font(Self.font)
+                .transition(.blurReplace)
             } else {
                 StreamingText(Self.formatted(turn.answer), revealsInitialText: turn.isStreaming)
                     .font(Self.font)
@@ -225,9 +240,9 @@ struct AnswerView: View {
         return "\(time) - \(Int(speed.rounded()))tk/s"
     }
 
+    /// Lists, headings, code and math as well as inline Markdown (see `AnswerFormatting`).
     private static func formatted(_ answer: String) -> AttributedString {
-        let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-        return (try? AttributedString(markdown: answer, options: options)) ?? AttributedString(answer)
+        AnswerFormatting.attributed(answer, size: 15)
     }
 
     // MARK: Asking
@@ -242,6 +257,65 @@ struct AnswerView: View {
         guard !text.isEmpty, !isAnswering else { return }
         thread.draft = ""
         thread.ask(text)
+    }
+}
+
+/// 72 pt capsule: back, the thread's title, and stop while an answer streams.
+struct AnswerCompactBar: View {
+    let state: AppState
+    let thread: AnswerThread
+    let onBack: () -> Void
+
+    @State private var isRenaming = false
+
+    var body: some View {
+        HStack(spacing: 8) {
+            SurfaceButton("chevron.left") { onBack() }
+            Group {
+                if let turn = thread.turns.last, turn.isStreaming, turn.answer.isEmpty {
+                    HStack(spacing: 6) {
+                        ShimmerText(turn.status)
+                            .lineLimit(1)
+                        ProgressPercent(percent: turn.progress)
+                    }
+                    .font(.system(size: 15, weight: .semibold))
+                } else {
+                    EditableTitle(title: thread.displayTitle, isEditing: $isRenaming) { name in
+                        if let id = thread.chatID { state.rename(id, to: name) }
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity)
+            if thread.isAnswering {
+                SurfaceButton("stop.fill", style: .prominent) { thread.stop() }
+                    .transition(.blurReplace)
+            } else {
+                ChatMoreMenu(state: state, thread: thread, isRenaming: $isRenaming, onLeave: onBack)
+                    .transition(.blurReplace)
+            }
+        }
+        .animation(SurfaceMotion.content, value: thread.isAnswering)
+        .padding(.horizontal, 18)
+        .padding(.vertical, 20)
+        .frame(width: 256, height: 72)
+    }
+}
+
+/// About how far along an answer is ("42%"), beside its status. Hidden until the estimate
+/// first moves.
+private struct ProgressPercent: View {
+    let percent: Int?
+
+    var body: some View {
+        if let percent, percent > 0 {
+            Text("\(percent)%")
+                .monospacedDigit()
+                .foregroundStyle(.white.opacity(0.35))
+                .contentTransition(.numericText(value: Double(percent)))
+                .animation(.smooth(duration: 0.3), value: percent)
+                .fixedSize()
+                .transition(.opacity)
+        }
     }
 }
 

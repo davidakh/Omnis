@@ -11,6 +11,10 @@ final class Chat {
     var updatedAt: Date
     /// Set once the user renames the chat, so generated titles never overwrite theirs.
     var hasCustomTitle: Bool
+    /// A summary of the chat's first `summarizedTurns` turns, written once it grew long, so
+    /// answers keep knowing what was said in them. Empty until then.
+    var summary: String = ""
+    var summarizedTurns: Int = 0
 
     @Relationship(deleteRule: .cascade, inverse: \ChatTurn.chat)
     var turns: [ChatTurn] = []

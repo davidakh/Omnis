@@ -1,17 +1,24 @@
 import SwiftUI
 
-/// 340×400: the projects, saved chats or scheduled list scrolling behind its two toolbars,
-/// with a tab bar between them.
+/// 340×400: the saved chats, research or scheduled list scrolling behind its two toolbars,
+/// with a tab bar between them. Also the sidebar beside an open chat (see `ChatSplitView`):
+/// narrower, without the back button, and with just the tab bar along the bottom.
 struct ConversationsScreen: View {
     let state: AppState
+    var isSidebar = false
+
+    /// The tab bar's margin from the sidebar's sides and bottom.
+    static let sidebarTabInset: CGFloat = 8
+    /// The 216 pt tab bar with `sidebarTabInset` either side.
+    static let sidebarWidth: CGFloat = 216 + sidebarTabInset * 2
 
     var body: some View {
         ZStack {
             // Full-height list that scrolls behind both toolbars; each tab starts at the top.
             Group {
                 switch state.chatsTab {
-                case .projects: EmptyTabList(message: "No projects yet")
                 case .conversations: ConversationList(state: state)
+                case .research: EmptyTabList(message: "No research yet")
                 case .scheduled: EmptyTabList(message: "Nothing scheduled yet")
                 }
             }
@@ -19,19 +26,21 @@ struct ConversationsScreen: View {
             .transition(.blurReplace)
             toolbars
         }
-        .frame(width: 340, height: 400)
+        .frame(width: isSidebar ? Self.sidebarWidth : 340, height: 400)
         .animation(SurfaceMotion.content, value: state.chatsTab)
     }
 
     private var toolbars: some View {
         VStack(spacing: 0) {
-            // Top toolbar: back, centered title, new.
+            // Top toolbar: back (not in the sidebar), centered title, new.
             ZStack {
                 ConversationsTitle(tab: state.chatsTab)
                 HStack {
-                    SurfaceButton("chevron.left") { state.closeConversations() }
+                    if !isSidebar {
+                        SurfaceButton("chevron.left") { state.closeConversations() }
+                    }
                     Spacer()
-                    NewMenu(state: state)
+                    NewButton(state: state)
                 }
             }
 
@@ -51,11 +60,38 @@ struct ConversationsScreen: View {
         .animation(SurfaceMotion.content, value: state.isFiltering)
     }
 
-    /// Select and filter work on chats; projects and scheduled have nothing to select or
+    /// Select and filter work on chats; research and scheduled have nothing to select or
     /// search yet.
     private var listActionsEnabled: Bool { state.chatsTab == .conversations }
 
+    private var tabBar: some View {
+        SurfaceTabBar(
+            tabs: [
+                .init(value: .conversations, title: "Chats", symbol: "bubble.left.and.bubble.right"),
+                .init(value: .research, title: "Research", symbol: "brain.filled.head.profile"),
+                .init(value: .scheduled, title: "Scheduled", symbol: "clock")
+            ],
+            selection: Bindable(state).chatsTab
+        )
+    }
+
+    @ViewBuilder
     private var standardToolbar: some View {
+        if isSidebar {
+            // Just the tabs, in a row their own height, reaching past the toolbars' 20 pt
+            // padding so they sit `sidebarTabInset` from the sides and bottom. Selecting and
+            // filtering are in the full list.
+            tabBar
+                .frame(maxWidth: .infinity)
+                .frame(height: 52)
+                .padding(.horizontal, Self.sidebarTabInset - 20)
+                .padding(.bottom, Self.sidebarTabInset - 20)
+        } else {
+            fullToolbar
+        }
+    }
+
+    private var fullToolbar: some View {
         HStack(spacing: 0) {
             SurfaceButton("checklist", style: state.isSelecting ? .prominent : .standard) {
                 state.toggleSelecting()
@@ -73,15 +109,8 @@ struct ConversationsScreen: View {
                     .glassEffect(.clear, in: Capsule())
                     .transition(.blurReplace)
             } else {
-                SurfaceTabBar(
-                    tabs: [
-                        .init(value: .projects, title: "Projects", symbol: "tray.full"),
-                        .init(value: .conversations, title: "Chats", symbol: "bubble.left.and.bubble.right"),
-                        .init(value: .scheduled, title: "Scheduled", symbol: "clock")
-                    ],
-                    selection: Bindable(state).chatsTab
-                )
-                .zIndex(1)  // the lifted pill floats above the neighbouring buttons
+                tabBar
+                    .zIndex(1)  // the lifted pill floats above the neighbouring buttons
                 .transition(.blurReplace)
             }
             Spacer(minLength: 0)
@@ -104,21 +133,40 @@ struct ConversationsScreen: View {
     }
 }
 
-/// The plus menu: start a new chat, project or task. Projects and tasks aren't built yet, so
-/// those open their tabs.
-private struct NewMenu: View {
+/// 72 pt capsule: back, the selected tab's title, and new.
+struct ConversationsCompactBar: View {
     let state: AppState
 
     var body: some View {
-        SurfaceMenuButton("plus") {
-            Group {
-                Button("New Chat", systemImage: "bubble.left") { state.newChat() }
-                Button("New Project", systemImage: "tray.full") { state.chatsTab = .projects }
-                Button("New Task", systemImage: "clock") { state.chatsTab = .scheduled }
-            }
-            // macOS menus show titles only by default; show each item's symbol too.
-            .labelStyle(.titleAndIcon)
+        HStack(spacing: 8) {
+            SurfaceButton("chevron.left") { state.closeConversations() }
+            ConversationsTitle(tab: state.chatsTab)
+                .frame(maxWidth: .infinity)
+            NewButton(state: state)
         }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 20)
+        .frame(width: 256, height: 72)
+    }
+}
+
+/// Starts something new in the selected tab: a blank chat on Chats. Research and scheduled
+/// tasks can't be created yet, so it's dimmed on those tabs.
+private struct NewButton: View {
+    let state: AppState
+
+    private var isEnabled: Bool { state.chatsTab == .conversations }
+
+    var body: some View {
+        SurfaceButton("square.and.pencil") {
+            switch state.chatsTab {
+            case .conversations: state.newChat()
+            case .research, .scheduled: break
+            }
+        }
+        .disabled(!isEnabled)
+        .opacity(isEnabled ? 1 : 0.4)
+        .animation(.smooth(duration: 0.2), value: isEnabled)
     }
 }
 
@@ -157,8 +205,8 @@ private struct ConversationsTitle: View {
 
     private var title: LocalizedStringKey {
         switch tab {
-        case .projects: "Projects"
         case .conversations: "Chats"
+        case .research: "Research"
         case .scheduled: "Scheduled"
         }
     }
@@ -174,7 +222,7 @@ private struct ConversationsTitle: View {
 
 // MARK: - Lists
 
-/// A tab that isn't built yet (projects, scheduled): shows where its items will go.
+/// A tab that isn't built yet (research, scheduled): shows where its items will go.
 private struct EmptyTabList: View {
     let message: LocalizedStringKey
 
@@ -228,6 +276,8 @@ private struct ConversationRow: View {
     @FocusState private var renameFocused: Bool
 
     private var isSelected: Bool { state.selection.contains(chat.id) }
+    /// The chat open beside the sidebar.
+    private var isCurrent: Bool { !state.isSelecting && state.mode.thread?.chatID == chat.id }
     private var isRenaming: Bool { state.renamingID == chat.id }
 
     var body: some View {
@@ -267,7 +317,7 @@ private struct ConversationRow: View {
         .padding(.vertical, 8)
         .padding(.horizontal, 10)
         .background(
-            .white.opacity(isSelected ? 0.12 : (isHovered ? 0.06 : 0)),
+            .white.opacity(isSelected || isCurrent ? 0.12 : (isHovered ? 0.06 : 0)),
             in: RoundedRectangle(cornerRadius: 12, style: .continuous)
         )
         .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))

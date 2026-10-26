@@ -15,12 +15,21 @@ final class AnswerThread: Hashable {
         var answer = ""
         /// What's happening before the first words arrive ("Thinking"…).
         var status = String(localized: "Thinking")
+        /// What Omnis said it's doing ("Let me look up…"), if it said so before the answer began.
+        /// Shown for this session only; never saved or sent back to the model.
+        var preface: String?
+        /// About how far along the answer is, 0–99, until its first word.
+        var progress: Int?
         var isStreaming = true
         var failed = false
         /// Set when the screen should have been included but couldn't be captured.
         var screenNotice: ScreenCaptureError?
         /// The app (and window) the answer looked at, when it used the screen.
         var screenSource: String?
+        /// Just the app it looked at ("Messages").
+        var screenApp: String?
+        /// About how long the model thought before answering, when it did.
+        var thoughtSeconds: Int?
         /// The web pages the answer drew on, when it searched the web.
         var webSources: [WebResult] = []
         /// Set when the web should have been searched but couldn't be.
@@ -30,6 +39,25 @@ final class AnswerThread: Hashable {
         var duration: TimeInterval?
         /// How fast the model wrote the answer, when it reports its token count.
         var tokensPerSecond: Double?
+
+        /// What happened before the answer, shown between the preface and the answer: the
+        /// thinking when there was some, else what was read.
+        var step: String? {
+            if let seconds = thoughtSeconds {
+                return seconds == 1
+                    ? String(localized: "Thought for 1 Second")
+                    : String(localized: "Thought for \(seconds) Seconds")
+            }
+            if let app = screenApp, screenNotice == nil {
+                return String(localized: "Read the Contents of \(app)")
+            }
+            if let first = webSources.first {
+                return webSources.count == 1
+                    ? String(localized: "Read \(first.displayName)")
+                    : String(localized: "Searched \(webSources.count) Sites")
+            }
+            return nil
+        }
     }
 
     private(set) var turns: [Turn] = []
@@ -40,16 +68,20 @@ final class AnswerThread: Hashable {
 
     @ObservationIgnored private unowned let state: AppState
     @ObservationIgnored private var streamTask: Task<Void, Never>?
+    /// The summary of the earliest turns once the thread grows long, and how many it covers.
+    @ObservationIgnored private var memory = ConversationMemory()
     /// The saved chat, once the first answer is saved. Observed, so Rename and Delete become
     /// available when it appears.
     private(set) var chatID: UUID?
-    /// Reopened from the conversations list, so leaving returns there.
+    /// Opened from the conversations list (reopened, or started there as a new chat), so
+    /// leaving returns there.
     let isResumed: Bool
 
     /// Starts answering `question` right away, or opens empty to wait for one.
-    init(state: AppState, question: String?) {
+    /// - Parameter fromList: started from the conversations list, so leaving returns there.
+    init(state: AppState, question: String?, fromList: Bool = false) {
         self.state = state
-        self.isResumed = false
+        self.isResumed = fromList
         if let question { ask(question) }
     }
 
@@ -60,6 +92,7 @@ final class AnswerThread: Hashable {
         self.isResumed = true
         self.chatID = chat.id
         turns = chat.orderedTurns.map { Turn(question: $0.question, answer: $0.answer, isStreaming: false) }
+        memory = ConversationMemory(summary: chat.summary, coveredTurns: min(chat.summarizedTurns, turns.count))
     }
 
     var isAnswering: Bool { turns.last?.isStreaming ?? false }
@@ -89,7 +122,7 @@ final class AnswerThread: Hashable {
         turns.append(Turn(question: question))
         let index = turns.count - 1
 
-        let stream = state.ask.answer(question, history: history)
+        let stream = state.ask.answer(question, history: history, memory: memory)
         streamTask = Task {
             do {
                 for try await event in stream {
@@ -98,14 +131,27 @@ final class AnswerThread: Hashable {
                         turns[index].status = status
                     case .screenUnavailable(let reason):
                         turns[index].screenNotice = reason
-                    case .screenIncluded(let source):
+                    case .screenIncluded(let source, let app):
                         turns[index].screenSource = source
+                        turns[index].screenApp = app
+                    case .thought(let seconds):
+                        turns[index].thoughtSeconds = seconds
                     case .webIncluded(let sources):
                         turns[index].webSources = sources
                     case .webUnavailable(let reason):
                         turns[index].webNotice = reason
                     case .speed(let tokensPerSecond):
                         turns[index].tokensPerSecond = tokensPerSecond
+                    case .preface(let preface):
+                        // Too late once the answer has started.
+                        if turns[index].answer.isEmpty {
+                            withAnimation(SurfaceMotion.content) { turns[index].preface = preface }
+                        }
+                    case .progress(let percent):
+                        turns[index].progress = percent
+                    case .memory(let memory):
+                        self.memory = memory
+                        if let chatID { state.store.setMemory(memory, for: chatID) }
                     case .text(let text):
                         if turns[index].answer.isEmpty {
                             withAnimation(SurfaceMotion.content) { turns[index].answer = text }

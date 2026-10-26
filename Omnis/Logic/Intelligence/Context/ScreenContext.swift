@@ -106,6 +106,14 @@ enum ScreenContextProvider {
         )
     }
 
+    /// The app whose window would be read ("Messages"), for saying so before it is. Nil when
+    /// Omnis itself is frontmost.
+    static var frontmostAppName: String? {
+        guard let app = NSWorkspace.shared.frontmostApplication,
+              app.processIdentifier != ProcessInfo.processInfo.processIdentifier else { return nil }
+        return app.localizedName
+    }
+
     /// The topmost normal window that isn't ours. The surface is a non-activating panel, so
     /// the app the user was working in stays frontmost while they type a question.
     private static func frontmostWindowID() -> CGWindowID? {
@@ -134,7 +142,9 @@ enum ScreenContextProvider {
             highlighted items, images, charts and what they show, buttons, errors and dialogs. \
             Describe only what's visible; never guess. Plain prose, at most 150 words.
             """)
-        let response = try? await session.respond(options: GenerationOptions(temperature: 0.1)) {
+        // About 150 words; the cap keeps a wordy description from holding up the answer.
+        let options = GenerationOptions(temperature: 0.1, maximumResponseTokens: 260)
+        let response = try? await session.respond(options: options) {
             "Describe this window."
             Attachment(image)
         }
